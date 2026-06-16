@@ -119,7 +119,6 @@ function makeNetDriver(state, ls) {
     tick() {
       ls.produce(pending); pending = [];
       ls.advance(2);
-      afterTick(state);
     },
   };
 }
@@ -186,6 +185,7 @@ function startRun(cfg, seed) {
   game.view = "world"; game.activeCorridor = 0; game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
   game.selectedTowerId = game.selectedEnemyId = game.buildTile = null;
   game.driver = (game.gameMode === "solo") ? makeSoloDriver(game.state) : makeNetDriver(game.state, game.lockstep);
+  if (sendBtn) sendBtn.style.display = "none";
   showScreen("game"); resize();
   ui.closeAllPanels(); setView("world", true);
   ui.updateTopBar(); ui.updateEnemyOverview(); ui.updateWavePanel();
@@ -322,7 +322,11 @@ function boot() {
     onTick: () => { if (game.driver) game.driver.tick(); },
     onFrame: (dt, running) => { if (running) game.clock += dt; }, // real wall-clock (speed-independent)
     onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
-    isRunning: () => game.screen === "game" && !game.paused && phaseRunning(),
+    isRunning: () => {
+      if (game.screen !== "game" || game.paused) return false;
+      if (game.gameMode !== "solo") return !(game.state && game.state.finished);
+      return phaseRunning();
+    },
   });
   loop.start();
   setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); } }, 250);
@@ -407,7 +411,7 @@ function updateGameModeButtons() {
     b.classList.toggle("sel", b.dataset.gamemode === setup.gameMode);
   });
 }
-function togglePause(force) { game.paused = force != null ? force : !game.paused; const o = $("pause-overlay"); if (o) o.classList.toggle("show", game.paused); }
+function togglePause(force) { if (game.gameMode !== "solo") { ui.toast("Can\u2019t pause in multiplayer"); return; } game.paused = force != null ? force : !game.paused; const o = $("pause-overlay"); if (o) o.classList.toggle("show", game.paused); }
 
 function fieldBottomInset() {
   const stage = $("game-stage"); if (!stage) return 12;
@@ -467,15 +471,27 @@ function bindTouch() {
 // ---- Multiplayer lobby helpers (Tier A) ----
 function mpId() { return "p_" + Math.random().toString(36).slice(2, 8); }
 function openLobby() { const m = $("multiplayer-lobby"); if (m) m.classList.add("show"); ui.renderMultiplayerLobby(game.lobby); }
+function handleRoomUpdate(room) {
+  if (!game.lobby) return;
+  game.lobby.room = room;
+  ui.renderMultiplayerLobby(game.lobby);
+  updateGameModeButtons();
+  if (room && room.status === "running" && room.match && !game.lobby.started) {
+    game.lobby.started = true;
+    startMultiplayerMatch(room.match);
+  }
+}
 async function mpCreateRoom() {
   if (!window.CTWMultiplayer) return ui.toast("Multiplayer not loaded yet");
   const roomId = prompt("Room code:", "ctw-" + Math.random().toString(36).slice(2, 6)); if (!roomId) return;
+  const modeIn = (prompt("Match type: 'competitive' or 'coop'", "competitive") || "competitive").toLowerCase();
+  const hostMode = modeIn === "coop" ? "coop" : "competitive";
   const playerId = mpId();
   try {
     await window.CTWMultiplayer.createRoom(roomId, playerId, { codeVersion: DB.codeVersion, contentHash: DB.contentHash });
-    game.lobby = { roomId, playerId, room: null, host: true };
-    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); updateGameModeButtons(); });
-    openLobby(); ui.toast("Room created: " + roomId);
+    game.lobby = { roomId, playerId, room: null, host: true, hostMode: hostMode, started: false };
+    window.CTWMultiplayer.watchRoom(roomId, handleRoomUpdate);
+    openLobby(); ui.toast("Room created: " + roomId + " (" + hostMode + ")");
   } catch (err) { ui.toast("Create failed: " + err.message); }
 }
 async function mpJoinRoom() {
@@ -484,8 +500,8 @@ async function mpJoinRoom() {
   const playerId = mpId();
   try {
     await window.CTWMultiplayer.joinRoom(roomId, playerId);
-    game.lobby = { roomId, playerId, room: null, host: false };
-    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); updateGameModeButtons(); });
+    game.lobby = { roomId, playerId, room: null, host: false, started: false };
+    window.CTWMultiplayer.watchRoom(roomId, handleRoomUpdate);
     openLobby(); ui.toast("Joined room: " + roomId);
   } catch (err) { ui.toast("Join failed: " + err.message); }
 }
@@ -496,9 +512,63 @@ async function mpToggleReady() {
 }
 async function mpStart() {
   const L = game.lobby; if (!L || !L.room || L.room.host !== L.playerId) return;
-  const players = Object.values(L.room.players || {});
-  if (!(players.length > 0 && players.every((p) => p.ready))) { ui.toast("Not everyone is ready yet."); return; }
-  try { await window.CTWMultiplayer.setRoomStatus(L.roomId, "starting"); ui.toast("All ready — synced match start coming in the next step."); } catch (err) { ui.toast(err.message); }
+  const entries = Object.entries(L.room.players || {});
+  if (!(entries.length >= 2 && entries.every(([, p]) => p.ready))) { ui.toast("Need at least 2 players, all ready."); return; }
+  entries.sort((a, b) => ((a[1].slot != null ? a[1].slot : 99) - (b[1].slot != null ? b[1].slot : 99)) || ((a[1].joinedAt || 0) - (b[1].joinedAt || 0)));
+  const order = entries.map(([id]) => id);
+  const match = {
+    seed: (Math.random() * 1e9) | 0,
+    gameMode: L.hostMode || "competitive",
+    mode: "loop", corridorCount: 4,
+    elements: ["fire", "ice", "nature", "storm"],
+    economy: "shared", statusMode: "standard",
+    order: order, startedAt: Date.now(),
+  };
+  try { await window.CTWMultiplayer.setMatchStart(L.roomId, match); } catch (err) { ui.toast("Start failed: " + err.message); }
+}
+
+function startMultiplayerMatch(match) {
+  const myIdx = match.order.indexOf(game.lobby.playerId);
+  if (myIdx < 0) { ui.toast("You are not part of this match."); return; }
+  const playerCount = match.order.length;
+  const players = match.order.map(() => ({ corridorCount: match.corridorCount, elements: match.elements.slice(0, match.corridorCount) }));
+  const cfg = { seed: match.seed, mode: match.mode, gameMode: match.gameMode, economy: match.economy, statusMode: match.statusMode, players };
+  game.state = createState(bal, cfg);
+  game.gameMode = match.gameMode; game.mode = match.mode; game.me = myIdx;
+  game.speed = 1; game.clock = 0; game.view = "world"; game.activeCorridor = 0;
+  game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
+  game.selectedTowerId = game.selectedEnemyId = game.buildTile = null;
+  const transport = window.CTWMultiplayer.makeTransport(game.lobby.roomId, myIdx);
+  game.lockstep = createLockstep({
+    state: game.state, SIM_DT, transport, localPlayer: myIdx, playerCount: playerCount,
+    onStep: (st) => afterTick(st),
+    onStall: (missing) => showBanner("Waiting for player " + missing.map((i) => i + 1).join(", ") + "…"),
+    onResume: () => hideBanner(),
+    onDesync: (d) => { console.warn("DESYNC", d); ui.toast("Desync detected (tick " + d.tick + ")"); },
+  });
+  game.driver = makeNetDriver(game.state, game.lockstep);
+  game.lockstep.start();
+  const lob = $("multiplayer-lobby"); if (lob) lob.classList.remove("show");
+  showScreen("game"); resize();
+  ui.closeAllPanels(); setView("world", true);
+  ui.updateTopBar(); ui.updateEnemyOverview(); ui.updateWavePanel();
+  setupSendButton();
+  ui.toast(match.gameMode === "coop" ? "Co-op match started!" : "Competitive match started!");
+}
+
+function showBanner(msg) { const b = $("mp-banner"); if (b) { b.textContent = msg; b.classList.add("show"); } }
+function hideBanner() { const b = $("mp-banner"); if (b) b.classList.remove("show"); }
+
+let sendBtn = null;
+function setupSendButton() {
+  const wrap = $("quick-wave-controls"); if (!wrap) return;
+  if (!sendBtn) { sendBtn = document.createElement("button"); sendBtn.id = "mp-send"; sendBtn.className = "btn"; sendBtn.textContent = "⚔ Send"; sendBtn.onclick = doSend; wrap.appendChild(sendBtn); }
+  sendBtn.style.display = (game.gameMode === "competitive") ? "" : "none";
+}
+function doSend() {
+  if (game.gameMode !== "competitive" || !game.state) return;
+  const n = game.state.players.length;
+  for (let i = 1; i < n; i++) { const idx = (game.me + i) % n; if (game.state.players[idx].alive) { cmd.send(idx, "grunt"); ui.toast("Sent a grunt to Player " + (idx + 1)); return; } }
 }
 
 function preventBrowserGestures() {
