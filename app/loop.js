@@ -27,6 +27,7 @@ export function createLoop(opts) {
   const onRender = opts.onRender;       // (alpha 0..1) => void — draw interpolated
   const isRunning = opts.isRunning || (() => true);
   const onFrame = opts.onFrame; // (dtReal, running) — real wall-clock, NOT speed-scaled
+  const getSpeed = opts.getSpeed || (() => 1); // sim-time multiplier (local solo / synced MP)
   const maxTicksPerFrame = opts.maxTicksPerFrame || 5; // avoid spiral of death
 
   let renderFps = opts.renderFps || 45; // local-only preference
@@ -48,7 +49,7 @@ export function createLoop(opts) {
     if (onFrame) onFrame(dtReal, isRunning());
 
     if (isRunning()) {
-      accumulator += dtReal;
+      accumulator += dtReal * (getSpeed() || 1);
       let ticks = 0;
       while (accumulator >= SIM_DT_SEC && ticks < maxTicksPerFrame) {
         onTick(SIM_DT_FX);
