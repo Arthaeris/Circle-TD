@@ -16,7 +16,9 @@
  * ===========================================================================*/
 
 import * as fx from "../sim/fx.js";
-import { SIM_HZ } from "../sim/core.js";
+
+// Sim runs at a fixed 30 Hz (must match sim/core.js SIM_HZ).
+const SIM_HZ = 30;
 
 export const SIM_DT_SEC = 1 / SIM_HZ;           // real seconds per sim tick
 export const SIM_DT_FX = fx.fromFloat(SIM_DT_SEC); // fixed-point seconds for step()
