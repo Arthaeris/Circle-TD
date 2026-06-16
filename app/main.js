@@ -31,7 +31,8 @@ const SIM_DT = fx.fromFloat(1 / SIM_HZ);
 const game = {
   state: null, me: 0,
   screen: "menu", view: "world", activeCorridor: 0,
-  speed: 1, time: 0,
+  speed: 1, time: 0, clock: 0,
+  lobby: null,
   mode: "loop", gameMode: "solo",
   selectedTowerId: null, selectedEnemyId: null, buildTile: null, buildMenuOpen: false,
   fieldCam: { x: 0, y: 0, zoom: 1 },
@@ -42,6 +43,16 @@ const game = {
 let meta = SaveSystem ? SaveSystem.loadMeta() : { mastery: {} };
 
 let canvas, assets, renderer, ui, loop;
+let musicMenu = null, musicGame = null, musicUnlocked = false;
+function initAudio() {
+  try {
+    musicMenu = new Audio("assets/audio/music_menu.mp3"); musicMenu.loop = true; musicMenu.volume = 0.4;
+    musicGame = new Audio("assets/audio/music_game.mp3"); musicGame.loop = true; musicGame.volume = 0.4;
+  } catch (e) {}
+}
+function unlockMusic() { musicUnlocked = true; }
+function playMenuMusic() { if (!musicUnlocked || !musicMenu) return; if (musicGame) musicGame.pause(); if (musicMenu.paused) musicMenu.play().catch(() => {}); }
+function playGameMusic() { if (!musicUnlocked || !musicGame) return; if (musicMenu) musicMenu.pause(); if (musicGame.paused) musicGame.play().catch(() => {}); }
 
 function masteryLevel(el) { return (meta.mastery && meta.mastery[el]) || 0; }
 
@@ -51,7 +62,7 @@ const view = {
   get player() { return game.state.players[game.me]; },
   get screen() { return game.screen; }, get view() { return game.view; },
   get activeCorridor() { return game.activeCorridor; },
-  get time() { return game.time; }, get speed() { return game.speed; },
+  get time() { return game.clock; }, get speed() { return game.speed; },
   get selectedTowerId() { return game.selectedTowerId; }, set selectedTowerId(x) { game.selectedTowerId = x; },
   get selectedEnemyId() { return game.selectedEnemyId; }, set selectedEnemyId(x) { game.selectedEnemyId = x; },
   get buildTile() { return game.buildTile; }, set buildTile(x) { game.buildTile = x; },
@@ -115,7 +126,6 @@ function makeNetDriver(state, ls) {
 // Runs once per executed sim tick: interpolation snapshot + event handling.
 function afterTick(state) {
   renderer.snapshotPositions(state);
-  game.time = state.tick / SIM_HZ;
   if (state.events && state.events.length) for (const ev of state.events) handleEvent(ev);
 }
 
@@ -144,6 +154,7 @@ function handleEvent(ev) {
 function showScreen(s) {
   game.screen = s;
   ["loading", "menu", "setup", "game"].forEach((x) => { const el = $("screen-" + x); if (el) el.classList.toggle("active", x === s); });
+  if (s === "menu") playMenuMusic(); else if (s === "game") playGameMusic();
 }
 function refreshMenu() { const c = $("btn-continue"); if (c) c.classList.toggle("disabled", !localStorage.getItem(RUN_KEY)); }
 
@@ -168,7 +179,7 @@ function startRun(cfg, seed) {
     mode: cfg.mode, gameMode: game.gameMode, economy: cfg.economy, statusMode: cfg.status, players,
   };
   game.state = createState(bal, stateCfg);
-  game.me = cfg.me || 0; game.speed = 1; game.time = 0;
+  game.me = cfg.me || 0; game.speed = 1; game.clock = 0;
   game.view = "world"; game.activeCorridor = 0; game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
   game.selectedTowerId = game.selectedEnemyId = game.buildTile = null;
   game.driver = (game.gameMode === "solo") ? makeSoloDriver(game.state) : makeNetDriver(game.state, game.lockstep);
@@ -198,6 +209,9 @@ function hasRun() { return !!localStorage.getItem(RUN_KEY); }
 function continueRun() {
   const raw = localStorage.getItem(RUN_KEY); if (!raw) return;
   let d; try { d = JSON.parse(raw); } catch (e) { return; }
+  restoreRun(d);
+}
+function restoreRun(d) {
   startRun({ mode: d.mode, corridors: d.corridorCount, economy: d.economy, status: d.statusMode, gameMode: "solo", elements: d.elements }, d.seed);
   const pl = game.state.players[0];
   pl.gold = d.gold; pl.essence = Object.assign(pl.essence, d.essence); pl.lives = d.lives; pl.wave = d.wave; pl.phase = d.phase === "wave" || d.phase === "endboss" ? "build" : d.phase;
@@ -283,8 +297,11 @@ function boot() {
   canvas = $("game-canvas");
   assets = createAssets(() => canvas.getContext("2d"));
   renderer = createRenderer({ canvas, assets, DB });
-  ui = createUI({ DB, getView: () => view, cmd, masteryLevel, enterCorridor });
+  ui = createUI({ DB, getView: () => view, cmd, masteryLevel, enterCorridor, getMeta: () => meta });
 
+  initAudio();
+  const unlockOnce = () => { unlockMusic(); (game.screen === "game" ? playGameMusic() : playMenuMusic()); document.removeEventListener("pointerdown", unlockOnce); };
+  document.addEventListener("pointerdown", unlockOnce);
   bindUI();
   resize();
   window.addEventListener("resize", resize);
@@ -300,7 +317,8 @@ function boot() {
 
   loop = createLoop({
     onTick: () => { if (game.driver) game.driver.tick(); },
-    onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
+    onFrame: (dt, running) => { if (running) game.clock += dt; }, // real wall-clock (speed-independent)
+    onRender: (alpha) => { if (game.screen === "game") { if (game.view === "field" && game.state) clampFieldCamera(); renderer.render(view, alpha); } },
     isRunning: () => game.screen === "game" && !game.paused && phaseRunning(),
   });
   loop.start();
@@ -313,7 +331,7 @@ function bindUI() {
   bindTouch();
   bind("btn-new-run", openSetup);
   bind("btn-continue", () => { if (hasRun()) continueRun(); });
-  bind("btn-mastery", () => {});
+  bind("btn-mastery", () => ui.openMastery());
   bind("btn-menu-save", () => { const m = $("save-modal"); if (m) m.classList.add("show"); });
   bind("btn-setup-back", () => showScreen("menu"));
   bind("btn-start-run", () => { startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, elements: setup.elements }); });
@@ -335,7 +353,31 @@ function bindUI() {
   bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
   bind("end-menu", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); showScreen("menu"); refreshMenu(); });
   bind("end-endless", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); game.state.players[game.me].phase = "build"; game.state.mode = "endless"; ui.toast("Endless Mode!"); });
+  // ---- Save / Import / Export ----
   bind("sm-close", () => $("save-modal").classList.remove("show"));
+  bind("sm-export-run", () => { const t = $("save-text"); if (t && SaveSystem) t.value = SaveSystem.exportRunText(serializeRun()); });
+  bind("sm-export-meta", () => { const t = $("save-text"); if (t && SaveSystem) t.value = SaveSystem.exportMetaText(meta); });
+  bind("sm-download", () => { if (SaveSystem) SaveSystem.downloadText(($("save-text").value) || SaveSystem.exportRunText(serializeRun()), "circle-tower-wars-save.json"); });
+  bind("sm-upload", () => { const f = $("sm-file"); if (f) f.click(); });
+  bind("sm-import", () => {
+    const t = $("save-text"); if (!t || !SaveSystem) return;
+    const res = SaveSystem.importText(t.value);
+    if (!res.ok) { ui.toast("Import failed: " + res.error); return; }
+    if (res.kind === "run") { restoreRun(res.data); $("save-modal").classList.remove("show"); ui.toast("Run imported!"); }
+    else { meta = res.data; SaveSystem.saveMeta(meta); $("save-modal").classList.remove("show"); ui.toast("Progress imported!"); refreshMenu(); }
+  });
+  bind("sm-reset", () => { if (confirm("Reset ALL progress? This cannot be undone.")) { if (SaveSystem) SaveSystem.resetAll(); meta = SaveSystem ? SaveSystem.loadMeta() : { mastery: {} }; ui.toast("Progress reset"); refreshMenu(); } });
+  const smFile = $("sm-file");
+  if (smFile) smFile.onchange = (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { const t = $("save-text"); if (t) t.value = rd.result; ui.toast("File loaded — press Import"); }; rd.readAsText(f); };
+
+  // ---- Multiplayer lobby (Tier A: rooms, ready, feedback) ----
+  bind("btn-create-room", () => mpCreateRoom());
+  bind("btn-join-room", () => mpJoinRoom());
+  bind("btn-show-room", () => alert(JSON.stringify(game.lobby && game.lobby.room, null, 2)));
+  bind("btn-firebase-test", async () => { try { if (!window.CTWMultiplayer) return ui.toast("Multiplayer not loaded"); await window.CTWMultiplayer.createTestRoom("test-room"); ui.toast("Firebase write OK"); } catch (err) { ui.toast("Firebase error: " + err.message); } });
+  bind("mp-lobby-close", () => $("multiplayer-lobby").classList.remove("show"));
+  bind("mp-ready", () => mpToggleReady());
+  bind("mp-start", () => mpStart());
   // keyboard
   window.addEventListener("keydown", (e) => {
     if (game.screen !== "game") return;
@@ -348,23 +390,96 @@ function bindUI() {
 function bind(id, fn) { const e = $(id); if (e) e.onclick = fn; }
 function togglePause(force) { game.paused = force != null ? force : !game.paused; const o = $("pause-overlay"); if (o) o.classList.toggle("show", game.paused); }
 
+function fieldBottomInset() {
+  const stage = $("game-stage"); if (!stage) return 12;
+  const sr = stage.getBoundingClientRect(); let inset = 12;
+  for (const id of ["build-menu", "tower-panel", "enemy-panel"]) {
+    const pnl = $(id);
+    if (pnl && pnl.classList.contains("show")) { const pr = pnl.getBoundingClientRect(); inset = Math.max(inset, sr.bottom - pr.top + 10); }
+  }
+  return inset;
+}
+function clampFieldCamera() {
+  const cam = game.fieldCam; cam.zoom = Math.max(1, Math.min(4, cam.zoom));
+  if (!game.state) return;
+  const G = game.state.grid, W = renderer.cw(), H = renderer.ch();
+  const top = fieldTopInset(), bottom = fieldBottomInset();
+  const ts = ((W - 24) / G.cols) * cam.zoom;
+  const gridW = ts * G.cols, gridH = ts * G.rows, visW = W - 24, visH = H - top - bottom;
+  if (gridW <= visW) cam.x = (visW - gridW) / 2;
+  else cam.x = Math.max(visW - gridW, Math.min(0, cam.x));
+  const minY = Math.min(0, visH - gridH);
+  cam.y = Math.max(minY, Math.min(0, cam.y));
+}
+function zoomFieldAt(sx, sy, newZoom) {
+  const before = renderer.fieldGeom(view);
+  const gx = (sx - before.ox) / before.ts, gy = (sy - before.oy) / before.ts;
+  game.fieldCam.zoom = Math.max(1, Math.min(4, newZoom));
+  const after = renderer.fieldGeom(view);
+  game.fieldCam.x += sx - (after.ox + gx * after.ts);
+  game.fieldCam.y += sy - (after.oy + gy * after.ts);
+  clampFieldCamera();
+}
 function bindTouch() {
-  let ts = null;
+  let tch = null;
   canvas.addEventListener("wheel", (ev) => {
     if (game.screen !== "game" || game.view !== "field") return; ev.preventDefault();
-    if (ev.ctrlKey) { game.fieldCam.zoom *= ev.deltaY < 0 ? 1.1 : 0.9; clampZoom(); } else { game.fieldCam.y -= ev.deltaY; }
+    const rect = canvas.getBoundingClientRect(), px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+    if (ev.ctrlKey) zoomFieldAt(px, py, game.fieldCam.zoom * (ev.deltaY < 0 ? 1.1 : 0.9));
+    else { game.fieldCam.y -= ev.deltaY; clampFieldCamera(); }
   }, { passive: false });
   canvas.addEventListener("touchstart", (ev) => {
     if (game.screen !== "game" || game.view !== "field") return;
-    if (ev.touches.length === 1) ts = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
-    if (ev.touches.length === 2) { const a = ev.touches[0], b = ev.touches[1]; ts = { mode: "pinch", dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), zoom: game.fieldCam.zoom }; }
+    if (ev.touches.length === 1) tch = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    if (ev.touches.length === 2) { const a = ev.touches[0], b = ev.touches[1]; tch = { mode: "pinch", dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), zoom: game.fieldCam.zoom }; }
   }, { passive: false });
   canvas.addEventListener("touchmove", (ev) => {
-    if (game.screen !== "game" || game.view !== "field" || !ts) return; ev.preventDefault();
-    if (ts.mode === "pan" && ev.touches.length === 1) { const t = ev.touches[0]; game.fieldCam.x += t.clientX - ts.x; game.fieldCam.y += t.clientY - ts.y; ts.x = t.clientX; ts.y = t.clientY; }
-    if (ts.mode === "pinch" && ev.touches.length === 2) { const a = ev.touches[0], b = ev.touches[1]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); game.fieldCam.zoom = ts.zoom * (d / ts.dist); clampZoom(); }
+    if (game.screen !== "game" || game.view !== "field" || !tch) return; ev.preventDefault();
+    if (tch.mode === "pan" && ev.touches.length === 1) { const t = ev.touches[0]; game.fieldCam.x += t.clientX - tch.x; game.fieldCam.y += t.clientY - tch.y; tch.x = t.clientX; tch.y = t.clientY; clampFieldCamera(); }
+    if (tch.mode === "pinch" && ev.touches.length === 2) {
+      const a = ev.touches[0], b = ev.touches[1], d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      const rect = canvas.getBoundingClientRect(), mx = (a.clientX + b.clientX) / 2 - rect.left, my = (a.clientY + b.clientY) / 2 - rect.top;
+      zoomFieldAt(mx, my, tch.zoom * (d / tch.dist));
+    }
   }, { passive: false });
-  canvas.addEventListener("touchend", () => { ts = null; }, { passive: false });
+  canvas.addEventListener("touchend", () => { tch = null; }, { passive: false });
+}
+
+// ---- Multiplayer lobby helpers (Tier A) ----
+function mpId() { return "p_" + Math.random().toString(36).slice(2, 8); }
+function openLobby() { const m = $("multiplayer-lobby"); if (m) m.classList.add("show"); ui.renderMultiplayerLobby(game.lobby); }
+async function mpCreateRoom() {
+  if (!window.CTWMultiplayer) return ui.toast("Multiplayer not loaded yet");
+  const roomId = prompt("Room code:", "ctw-" + Math.random().toString(36).slice(2, 6)); if (!roomId) return;
+  const playerId = mpId();
+  try {
+    await window.CTWMultiplayer.createRoom(roomId, playerId, { codeVersion: DB.codeVersion, contentHash: DB.contentHash });
+    game.lobby = { roomId, playerId, room: null, host: true };
+    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); });
+    openLobby(); ui.toast("Room created: " + roomId);
+  } catch (err) { ui.toast("Create failed: " + err.message); }
+}
+async function mpJoinRoom() {
+  if (!window.CTWMultiplayer) return ui.toast("Multiplayer not loaded yet");
+  const roomId = prompt("Room code:", "ctw-test"); if (!roomId) return;
+  const playerId = mpId();
+  try {
+    await window.CTWMultiplayer.joinRoom(roomId, playerId);
+    game.lobby = { roomId, playerId, room: null, host: false };
+    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); });
+    openLobby(); ui.toast("Joined room: " + roomId);
+  } catch (err) { ui.toast("Join failed: " + err.message); }
+}
+async function mpToggleReady() {
+  const L = game.lobby; if (!L || !L.room || !L.room.players || !L.room.players[L.playerId]) return;
+  const cur = !!L.room.players[L.playerId].ready;
+  try { await window.CTWMultiplayer.setReady(L.roomId, L.playerId, !cur); } catch (err) { ui.toast(err.message); }
+}
+async function mpStart() {
+  const L = game.lobby; if (!L || !L.room || L.room.host !== L.playerId) return;
+  const players = Object.values(L.room.players || {});
+  if (!(players.length > 0 && players.every((p) => p.ready))) { ui.toast("Not everyone is ready yet."); return; }
+  try { await window.CTWMultiplayer.setRoomStatus(L.roomId, "starting"); ui.toast("All ready — synced match start coming in the next step."); } catch (err) { ui.toast(err.message); }
 }
 
 function preventBrowserGestures() {
