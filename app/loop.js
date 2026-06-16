@@ -16,7 +16,6 @@
  * ===========================================================================*/
 
 import * as fx from "../sim/fx.js";
-
 // Sim runs at a fixed 30 Hz (must match sim/core.js SIM_HZ).
 const SIM_HZ = 30;
 
@@ -27,6 +26,7 @@ export function createLoop(opts) {
   const onTick = opts.onTick;           // (SIM_DT_FX) => void  — advance one sim tick
   const onRender = opts.onRender;       // (alpha 0..1) => void — draw interpolated
   const isRunning = opts.isRunning || (() => true);
+  const onFrame = opts.onFrame; // (dtReal, running) — real wall-clock, NOT speed-scaled
   const maxTicksPerFrame = opts.maxTicksPerFrame || 5; // avoid spiral of death
 
   let renderFps = opts.renderFps || 45; // local-only preference
@@ -45,6 +45,7 @@ export function createLoop(opts) {
   function frame(t) {
     const dtReal = Math.min(0.05, (t - lastT) / 1000 || 0); // clamp big gaps
     lastT = t;
+    if (onFrame) onFrame(dtReal, isRunning());
 
     if (isRunning()) {
       accumulator += dtReal;
