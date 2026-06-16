@@ -17,6 +17,7 @@ export function createUI(opts) {
   const getView = opts.getView;       // () => view {state, me, player, view, activeCorridor, ...}
   const cmd = opts.cmd;               // command emitters {build, sell, upgrade, mutate, startWave, send}
   const masteryLevel = opts.masteryLevel || (() => 5);
+  const getMeta = opts.getMeta || (() => ({ mastery: {}, elementWins: {} }));
 
   let toastT = null;
   function toast(msg) { const t = $("toast"); if (!t) return; t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
@@ -165,9 +166,82 @@ export function createUI(opts) {
         row.appendChild(optsEl); wrap.appendChild(row);
       }
     }
+    drawShapePreview(setup);
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup };
+  // ---- setup preview (shape polygon + chosen element icons) ----------------
+  function drawShapePreview(setup) {
+    const c = $("preview-canvas"); if (!c) return;
+    const x = c.getContext("2d");
+    const W = c.width = c.clientWidth * 2, H = c.height = c.clientHeight * 2;
+    x.clearRect(0, 0, W, H);
+    const n = setup.mode === "single" ? 1 : setup.corridors;
+    const pts = DB.polygonPoints(n);
+    const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.36;
+    x.lineWidth = 4; x.strokeStyle = "rgba(255,255,255,.25)";
+    if (n > 1) {
+      x.beginPath();
+      pts.forEach((p, i) => { const px = cx + p.x * R, py = cy + p.y * R; i ? x.lineTo(px, py) : x.moveTo(px, py); });
+      x.closePath(); x.stroke();
+    }
+    pts.forEach((p, i) => {
+      const px = cx + p.x * R, py = cy + p.y * R;
+      const el = DB.ELEMENTS[setup.elements[i]] || DB.ELEMENTS.fire;
+      x.beginPath(); x.arc(px, py, 22, 0, 7); x.fillStyle = el.color; x.fill();
+      x.fillStyle = "#0d0f1a"; x.font = "26px serif"; x.textAlign = "center"; x.textBaseline = "middle";
+      x.fillText(el.icon, px, py + 1);
+    });
+    if (n === 1) { x.fillStyle = "rgba(255,255,255,.4)"; x.font = "20px sans-serif"; x.fillText("Single Lane", cx, cy + 50); }
+  }
+
+  // ---- mastery screen ------------------------------------------------------
+  function openMastery() {
+    const m = $("mastery-screen"); if (!m) return;
+    const meta = getMeta();
+    const avail = DB.availableElements(meta.mastery || {});
+    let html = `<button class="panel-close" id="ms-close">✕</button><h2>Elemental Mastery</h2><div class="mastery-grid">`;
+    DB.ELEMENT_ORDER.forEach((eid) => {
+      const el = DB.ELEMENTS[eid];
+      const lvl = (meta.mastery && meta.mastery[eid]) || 0;
+      const wins = (meta.elementWins && meta.elementWins[eid]) || 0;
+      const locked = !avail.includes(eid);
+      const nextReq = lvl >= 5 ? "MAX" : lvl === 4 ? "Reach Wave 100" : `Win ${DB.MASTERY.winsRequired[lvl + 1]} runs`;
+      html += `<div class="mastery-card ${locked ? "locked" : ""}" style="--ec:${el.color}">
+        <div class="mc-head">${el.icon} ${el.name} ${locked ? "🔒" : ""}</div>
+        <div class="mc-lvl">Mastery ${lvl}/5</div>
+        <div class="mc-pips">${[1,2,3,4,5].map(i => `<span class="${i <= lvl ? "on" : ""}"></span>`).join("")}</div>
+        <div class="mc-req">${locked ? unlockHint(eid) : nextReq}</div>
+        <div class="mc-wins">Wins with element: ${wins}</div></div>`;
+    });
+    html += `</div>`;
+    m.innerHTML = html; m.classList.add("show");
+    $("ms-close").onclick = () => m.classList.remove("show");
+  }
+  function unlockHint(eid) {
+    if (eid === "light" || eid === "darkness") return "Unlock: all starters at Mastery 1";
+    if (eid === "mech" || eid === "abnormal") return "Unlock: any element at Mastery 5";
+    return "";
+  }
+
+  // ---- multiplayer lobby ---------------------------------------------------
+  function renderMultiplayerLobby(mp) {
+    const box = $("mp-player-list");
+    const code = $("mp-room-code"); if (code) code.textContent = (mp && mp.roomId) || "---";
+    if (!box) return;
+    const room = mp && mp.room;
+    if (!room || !room.players) { box.innerHTML = `<p class="dim">Waiting for room data...</p>`; return; }
+    const players = Object.entries(room.players);
+    box.innerHTML = players.map(([id, p], i) => {
+      const me = id === mp.playerId ? " — You" : "";
+      const host = room.host === id ? " 👑" : "";
+      const ready = p.ready ? "✅ Ready" : "⏳ Not ready";
+      return `<div class="end-stat"><span>Player ${i + 1}${host}${me}</span><b>${ready}</b></div>`;
+    }).join("");
+    const startBtn = $("mp-start");
+    if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
+  }
+
+  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, drawShapePreview, openMastery, renderMultiplayerLobby };
 }
 
 export default { createUI };
