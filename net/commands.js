@@ -9,7 +9,7 @@
 
 export const CommandTypes = [
   "BuildTower", "SellTower", "UpgradeTower", "MutateTower",
-  "StartWave", "SendEnemy", "Ack",
+  "StartWave", "SendEnemy", "SetSpeed", "Ack",
 ];
 
 // Factory helpers (the shell builds these from local input, never mutating state).
@@ -27,6 +27,7 @@ export function mutateTower(player, corridorId, towerId, mutId, masteryLevel) {
 }
 export function startWave(player) { return { type: "StartWave", player }; }
 export function sendEnemy(player, target, enemyType) { return { type: "SendEnemy", player, target, enemyType }; }
+export function setSpeed(player, speed) { return { type: "SetSpeed", player, speed }; }
 export function ack(player) { return { type: "Ack", player }; }
 
 // Deterministic ordering of a tick's commands. `seq` is a monotonically
@@ -54,6 +55,7 @@ export function serialize(cmds) {
     if (c.target != null) o.g = c.target;
     if (c.enemyType != null) o.e = c.enemyType;
     if (c.masteryLevel != null) o.l = c.masteryLevel;
+    if (c.speed != null) o.sp = c.speed;
     if (c.seq != null) o.s = c.seq;
     return o;
   });
@@ -61,11 +63,11 @@ export function serialize(cmds) {
 export function deserialize(arr) {
   return (arr || []).map(o => ({
     type: o.t, player: o.p, corridorId: o.c, gx: o.x, gy: o.y, towerType: o.w,
-    towerId: o.i, mutId: o.m, target: o.g, enemyType: o.e, masteryLevel: o.l, seq: o.s,
+    towerId: o.i, mutId: o.m, target: o.g, enemyType: o.e, masteryLevel: o.l, speed: o.sp, seq: o.s,
   }));
 }
 
 export default {
   CommandTypes, buildTower, sellTower, upgradeTower, mutateTower,
-  startWave, sendEnemy, ack, orderCommands, serialize, deserialize,
+  startWave, sendEnemy, setSpeed, ack, orderCommands, serialize, deserialize,
 };
