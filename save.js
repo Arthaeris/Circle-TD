@@ -231,3 +231,6 @@ const SaveSystem = (function () {
     HAS_LS,
   };
 })();
+
+// Expose for the ES-module shell (app/main.js reads window.SaveSystem).
+if (typeof window !== "undefined") window.SaveSystem = SaveSystem;
