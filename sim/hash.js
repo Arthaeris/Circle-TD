@@ -48,6 +48,7 @@ export function hashState(state) {
   let h = newHash();
   h = mixInt(h, state.tick);
   h = mixInt(h, state.seedSim.s);
+  h = mixInt(h, state.netSpeed || 1);
   for (const pl of state.players) {
     h = mixInt(h, pl.lives);
     h = mixInt(h, pl.gold);
