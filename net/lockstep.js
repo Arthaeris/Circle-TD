@@ -21,7 +21,7 @@ import { orderCommands } from "./commands.js";
 import { step } from "../sim/core.js";
 import { hashState } from "../sim/hash.js";
 
-export const INPUT_DELAY = 3;     // ticks (~100ms @30Hz)
+export const INPUT_DELAY = 10;    // ticks (~330ms @30Hz) — covers RTDB round-trip so the sim never starves
 export const HASH_EVERY = 30;     // checkpoint cadence (§6.4)
 export const STALL_AFTER = 30;    // ticks of silence before pausing (§6.5)
 
@@ -37,6 +37,7 @@ export function createLockstep(opts) {
   let simTick = 0;                // next tick to execute
   let tickLocal = 0;              // next tick we owe local input for
   let stalled = false;
+  let stallCount = 0;
   let seqCounter = 0;
 
   function ensure(tick) {
@@ -105,11 +106,13 @@ export function createLockstep(opts) {
       }
       inputBuffer.delete(simTick);
       simTick++; executed++;
+      stallCount = 0;
       if (stalled) { stalled = false; if (onResume) onResume(); }
     }
-    if (!haveAllInputsFor(simTick)) {
-      const missing = missingPlayers(simTick);
-      if (missing.length && !stalled) { stalled = true; if (onStall) onStall(missing); }
+    if (executed === 0 && !haveAllInputsFor(simTick)) {
+      // only surface the banner after a SUSTAINED stall (ignore transient jitter)
+      stallCount++;
+      if (stallCount >= STALL_AFTER && !stalled) { stalled = true; if (onStall) onStall(missingPlayers(simTick)); }
     }
     return executed;
   }
