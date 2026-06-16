@@ -29,6 +29,7 @@ export function createLockstep(opts) {
   const state = opts.state, SIM_DT = opts.SIM_DT, transport = opts.transport;
   const localPlayer = opts.localPlayer, playerCount = opts.playerCount;
   const onDesync = opts.onDesync, onStall = opts.onStall, onResume = opts.onResume;
+  const onStep = opts.onStep; // (state) called after each executed sim tick (shell hook)
 
   const inputBuffer = new Map();  // tick -> { player -> commands[] }
   const myHashes = new Map();
@@ -95,6 +96,7 @@ export function createLockstep(opts) {
       const all = [];
       for (let p = 0; p < playerCount; p++) if (slot[p]) for (let i = 0; i < slot[p].length; i++) all.push(slot[p][i]);
       step(state, orderCommands(all), SIM_DT);
+      if (onStep) onStep(state);
       if (state.tick % HASH_EVERY === 0) {
         const h = hashState(state);
         myHashes.set(state.tick, h);
