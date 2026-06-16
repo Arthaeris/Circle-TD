@@ -8,7 +8,7 @@
  * fetch (the asset set is large and partly optional), and the core shell files
  * are pre-cached on install.
  * ===========================================================================*/
-const CACHE_VERSION = "ctw-v2";
+const CACHE_VERSION = "ctw-v3";
 const CORE = [
   "./",
   "./index.html",
