@@ -25,7 +25,7 @@ import { generateWave, enemyScale, totalWaves } from "./waves.js";
 
 const F = fx.fromFloat;
 const HALF = fx.HALF;                  // 0.5 in fixed
-const SIM_HZ = 30;
+export const SIM_HZ = 30;
 
 // Grid cell codes (see pathfind.js): 0 free, 1 obstacle, 2 tower.
 const CELL_FREE = 0, CELL_OBSTACLE = 1, CELL_TOWER = 2;
