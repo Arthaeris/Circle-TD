@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<!-- =============================================================================
+  Circle Tower Wars — play.html  (NEW entry point for the rebuilt, modular engine)
+  Rename this to index.html to make it the default (the original index.html is
+  preserved untouched). Script order matters:
+    1) database.js        — content library (sets window.DB)
+    2) database-ext.js    — adds game modes + competitive economy + version (§8/§6.4)
+    3) save.js            — save/export/import layer (sets window.SaveSystem)
+    4) net/firebase.js    — multiplayer transport (module; sets window.CTWMultiplayer)
+    5) app/main.js        — module engine (imports sim/render/ui/net/app)
+  All image paths keep the UPPERCASE .PNG extension (Decision D1).
+============================================================================== -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0c1c" />
+  <!-- iOS / PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Circle Tower Wars" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" href="assets/ui/app-icon.PNG" />
+  <link rel="apple-touch-icon" href="assets/ui/app-icon.PNG" />
+  <title>Circle Tower Wars</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="mobile.css" />
+</head>
+<body>
+<div id="app">
+
+  <section id="screen-loading" class="screen active">
+    <div class="loading-wrap">
+      <h1>Circle Tower Wars</h1>
+      <p id="loading-text">Loading assets...</p>
+      <div class="loading-bar"><div id="loading-fill"></div></div>
+    </div>
+  </section>
+
+  <section id="screen-menu" class="screen">
+    <div class="menu-bg"></div>
+    <div class="menu-content">
+      <h1 class="game-title">Circle<span>Tower</span>Wars</h1>
+      <p class="game-tag">A looping-battlefield tower defense. Enemies never leave — they cycle until destroyed.</p>
+      <div class="menu-buttons">
+        <button id="btn-continue" class="btn big disabled">Continue</button>
+        <button id="btn-new-run" class="btn big primary">New Run</button>
+        <button id="btn-mastery" class="btn">Mastery</button>
+        <button id="btn-menu-save" class="btn">Save / Import / Export</button>
+        <button id="btn-create-room" class="btn">Create Multiplayer Room</button>
+        <button id="btn-join-room" class="btn">Join Multiplayer Room</button>
+        <button id="btn-show-room" class="btn">Show Room</button>
+        <button id="btn-firebase-test" class="btn">Firebase Test</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="screen-setup" class="screen">
+    <div class="setup-wrap">
+      <div class="setup-head">
+        <button id="btn-setup-back" class="btn ghost">‹ Back</button>
+        <h2>New Run</h2>
+        <div style="width:64px"></div>
+      </div>
+      <div class="setup-body">
+        <div class="setup-left">
+          <div class="setup-section">
+            <h3>Game Mode</h3>
+            <div class="row">
+              <button class="chip" data-mode="single">Single Corridor</button>
+              <button class="chip" data-mode="loop">Loop Mode</button>
+              <button class="chip" data-mode="endless">Endless</button>
+            </div>
+          </div>
+          <div class="setup-section">
+            <h3>Match Type</h3>
+            <div class="row">
+              <button class="chip" data-gamemode="solo">Solo</button>
+              <button class="chip" data-gamemode="coop">Co-op</button>
+              <button class="chip" data-gamemode="competitive">Competitive</button>
+            </div>
+          </div>
+          <div class="setup-section">
+            <h3>Corridors — <span id="shape-name"></span></h3>
+            <div class="row" id="corridor-buttons"></div>
+          </div>
+          <div class="setup-section">
+            <h3>Economy</h3>
+            <div class="row">
+              <button class="chip" data-econ="shared">Shared Gold</button>
+              <button class="chip" data-econ="elemental">Elemental Essence</button>
+            </div>
+          </div>
+          <div class="setup-section">
+            <h3>Status System</h3>
+            <div class="row">
+              <button class="chip" data-status="standard">Single Status</button>
+              <button class="chip" data-status="advanced">Advanced Stacking</button>
+            </div>
+          </div>
+        </div>
+        <div class="setup-right">
+          <div class="preview-box"><canvas id="preview-canvas"></canvas></div>
+          <div class="setup-section">
+            <h3>Element Assignment</h3>
+            <div id="element-assign"></div>
+          </div>
+        </div>
+      </div>
+      <button id="btn-start-run" class="btn big primary start-btn">⚔ Begin Run</button>
+    </div>
+  </section>
+
+  <section id="screen-game" class="screen">
+    <div id="topbar">
+      <div class="tb-item"><span class="tb-ico">❤</span><span id="lives">20/20</span></div>
+      <div class="tb-item" id="currency-display">🪙 0</div>
+      <button class="tb-item tb-btn" id="wave-display">Wave 0</button>
+      <div class="tb-item"><span class="tb-ico">⏱</span><span id="match-time">00:00</span></div>
+      <button class="tb-item tb-btn" id="btn-settings-ingame">⚙</button>
+    </div>
+    <div id="game-stage">
+      <canvas id="game-canvas"></canvas>
+      <div id="transition"><div class="cloud left"></div><div class="cloud right"></div></div>
+      <div id="screen-flash"></div>
+      <div id="enemy-overview" class="overlay-panel"></div>
+      <div id="field-nav">
+        <button id="btn-world" class="nav-btn">⌂ World</button>
+        <button id="btn-prev-corridor" class="nav-btn arrow">‹</button>
+        <span id="corridor-name">Corridor</span>
+        <button id="btn-next-corridor" class="nav-btn arrow">›</button>
+      </div>
+      <div id="build-menu" class="bottom-panel"></div>
+      <div id="tower-panel" class="bottom-panel"></div>
+      <div id="enemy-panel" class="bottom-panel"></div>
+      <div id="toast"></div>
+      <div id="mp-banner"></div>
+    </div>
+    <div id="quick-wave-controls">
+      <button id="quick-start-wave" class="btn primary">▶ Start Wave</button>
+      <button id="quick-speed-cycle" class="btn ghost">×1</button>
+    </div>
+    <div id="pause-overlay" class="modal-overlay">
+      <div class="modal">
+        <h2>Paused</h2>
+        <div class="modal-buttons">
+          <button id="pause-resume" class="btn primary">Resume</button>
+          <button id="pause-restart" class="btn">Restart</button>
+          <button id="pause-save" class="btn">Save</button>
+          <button id="pause-exit" class="btn ghost">Exit to Menu</button>
+        </div>
+        <div id="render-fps-row">
+          <span class="dim">Render FPS</span>
+          <button class="btn" data-fps="30">30</button>
+          <button class="btn" data-fps="45">45</button>
+          <button class="btn" data-fps="60">60</button>
+        </div>
+      </div>
+    </div>
+    <div id="end-screen" class="modal-overlay">
+      <div class="modal">
+        <h1 id="end-title" class="win">VICTORY</h1>
+        <div id="end-body" class="end-body"></div>
+        <div class="modal-buttons">
+          <button id="end-endless" class="btn primary">Continue into Endless</button>
+          <button id="end-again" class="btn">Play Again</button>
+          <button id="end-menu" class="btn ghost">Main Menu</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="mastery-screen" class="modal-overlay"></div>
+
+  <div id="save-modal" class="modal-overlay">
+    <div class="modal wide">
+      <button class="panel-close" id="sm-close">✕</button>
+      <h2>Save · Import · Export</h2>
+      <p class="dim sm-note">Progress auto-saves on this device after every wave. Export a JSON backup you can re-import if storage is ever cleared.</p>
+      <div class="sm-actions">
+        <button id="sm-export-run" class="btn">Show Current Run</button>
+        <button id="sm-export-meta" class="btn">Show Progress</button>
+        <button id="sm-download" class="btn primary">⬇ Download .json</button>
+      </div>
+      <textarea id="save-text" placeholder="Paste a save here to import, or press a button above to export…"></textarea>
+      <input type="file" id="sm-file" accept=".json,application/json" hidden />
+      <div class="sm-actions">
+        <button id="sm-upload" class="btn">⬆ Upload File</button>
+        <button id="sm-import" class="btn primary">Import</button>
+        <button id="sm-reset" class="btn danger">Reset All Progress</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="multiplayer-lobby" class="modal-overlay">
+    <div class="modal">
+      <button class="panel-close" id="mp-lobby-close">✕</button>
+      <h2>Multiplayer Lobby</h2>
+      <p class="dim">Room: <b id="mp-room-code">---</b></p>
+      <div id="mp-player-list"></div>
+      <div class="modal-buttons">
+        <button id="mp-ready" class="btn primary">Ready</button>
+        <button id="mp-start" class="btn">Start Game</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- data + save layer (classic scripts), then the modular engine -->
+<script src="database.js"></script>
+<script src="database-ext.js"></script>
+<script src="save.js"></script>
+<script type="module" src="net/firebase.js"></script>
+<script type="module" src="app/main.js"></script>
+</body>
+</html>

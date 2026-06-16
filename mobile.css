@@ -1,0 +1,105 @@
+/* =============================================================================
+ * Circle Tower Wars — mobile.css
+ * Mobile / long-session refinements (loaded AFTER style.css so it overrides).
+ * Goals: comfortable one-handed touch, no accidental browser gestures, safe-area
+ * awareness on notched phones, and lower visual churn for battery on long runs.
+ * In-game text stays English; this file only touches layout/ergonomics.
+ * ===========================================================================*/
+
+/* Respect the device safe areas (notch / home indicator) on the chrome. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --touch-min: 48px;            /* WCAG/Material minimum touch target */
+}
+
+/* Kill text selection, long-press callouts, tap highlight and overscroll so a
+   long play session never accidentally selects text or bounces the page. */
+html, body, #app {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+#save-text { -webkit-user-select: text; user-select: text; } /* but allow paste box */
+
+/* Top bar clears the notch; items get a comfortable tap height. */
+#topbar {
+  padding-top: calc(6px + var(--safe-top));
+  padding-left: calc(8px + var(--safe-left));
+  padding-right: calc(8px + var(--safe-right));
+}
+#topbar .tb-item, #topbar .tb-btn { min-height: 40px; }
+
+/* Quick wave controls sit above the home indicator and are thumb-sized. */
+#quick-wave-controls {
+  bottom: calc(10px + var(--safe-bottom));
+  gap: 10px;
+}
+#quick-wave-controls .btn {
+  min-height: var(--touch-min);
+  min-width: 132px;
+  font-size: 16px;
+  border-radius: 14px;
+}
+
+/* Field navigation buttons: bigger arrows, easier to hit while panning. */
+#field-nav { padding-top: calc(6px + var(--safe-top)); }
+#field-nav .nav-btn { min-width: var(--touch-min); min-height: var(--touch-min); font-size: 18px; }
+
+/* Bottom panels (build / tower / enemy) get a safe-area cushion and a max-height
+   so they never cover the whole field on small screens; they scroll instead. */
+.bottom-panel {
+  padding-bottom: calc(10px + var(--safe-bottom));
+  max-height: 46vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Build cards: 2-up grid with large, easy targets. */
+.build-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.build-card { min-height: 88px; padding: 12px; }
+.build-card .bc-name { font-size: 15px; }
+
+/* Tower panel action buttons large enough for thumbs. */
+.tp-actions button, .mut-card { min-height: var(--touch-min); }
+
+/* Menu + modal buttons: full-width, tall, generously spaced for one hand. */
+.menu-buttons .btn, .modal-buttons .btn {
+  min-height: var(--touch-min);
+  font-size: 16px;
+}
+.menu-buttons { gap: 12px; }
+
+/* Panel close buttons: bigger hit area. */
+.panel-close { width: 40px; height: 40px; font-size: 18px; }
+
+/* A local render-rate / battery toggle the app can surface (hidden by default;
+   app/main.js shows it in the pause overlay). */
+#render-fps-row { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 8px; }
+#render-fps-row .btn { min-height: 40px; min-width: 56px; }
+
+/* Reduce motion when the OS asks for it (helps long sessions / sensitivity). */
+@media (prefers-reduced-motion: reduce) {
+  #transition .cloud { transition: none !important; }
+  #screen-flash { transition: none !important; }
+}
+
+/* Landscape phones: keep panels from eating vertical space. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .bottom-panel { max-height: 70vh; }
+  .build-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Desync / waiting-for-player banner (multiplayer, §6.5). */
+#mp-banner {
+  position: fixed; left: 50%; top: calc(50% ); transform: translate(-50%, -50%);
+  z-index: 60; background: rgba(10,12,28,.92); color: #fff;
+  padding: 16px 22px; border-radius: 14px; border: 1px solid rgba(255,255,255,.18);
+  font-size: 15px; text-align: center; display: none; max-width: 80vw;
+}
+#mp-banner.show { display: block; }
