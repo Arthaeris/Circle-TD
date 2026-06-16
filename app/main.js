@@ -8,7 +8,7 @@
  * into commands; it never mutates sim state directly.
  * ===========================================================================*/
 import * as fx from "../sim/fx.js";
-import { createState, step, SIM_HZ } from "../sim/core.js";
+import { createState, step, SIM_HZ, findBuildSpot } from "../sim/core.js";
 import { buildBalance } from "../sim/balance.js";
 import { hashContent } from "../sim/hash.js";
 import * as C from "../net/commands.js";
@@ -34,7 +34,7 @@ const game = {
   speed: 1, time: 0, clock: 0,
   lobby: null,
   mode: "loop", gameMode: "solo",
-  selectedTowerId: null, selectedEnemyId: null, buildTile: null, buildMenuOpen: false,
+  selectedTowerId: null, selectedEnemyId: null, buildTile: null, buildMenuOpen: false, buildSpot: null,
   fieldCam: { x: 0, y: 0, zoom: 1 },
   driver: null,                      // solo or lockstep driver
   lockstep: null, room: null,
@@ -67,6 +67,7 @@ const view = {
   get selectedEnemyId() { return game.selectedEnemyId; }, set selectedEnemyId(x) { game.selectedEnemyId = x; },
   get buildTile() { return game.buildTile; }, set buildTile(x) { game.buildTile = x; },
   get buildMenuOpen() { return game.buildMenuOpen; }, set buildMenuOpen(x) { game.buildMenuOpen = x; },
+  get buildSpot() { return game.buildSpot; }, set buildSpot(x) { game.buildSpot = x; },
   fieldCam: game.fieldCam,
   fieldTopInset: () => fieldTopInset(),
   set _vortex(x) { game._vortex = x; }, get _vortex() { return game._vortex; },
@@ -135,7 +136,8 @@ function handleEvent(ev) {
     return;
   }
   switch (ev.kind) {
-    case "wave": ui.updateTopBar(); ui.updateWavePanel(); break;
+    case "wave": ui.updateTopBar(); ui.updateWavePanel(); ui.toast(ev.boss ? ("\u26A0 Wave " + ev.wave + " \u2014 BOSS WAVE") : ("Wave " + ev.wave + " incoming")); break;
+    case "reject": { const M = { funds: (game.state.economy === "shared" ? "Not enough gold." : "Not enough essence."), noRoom: "No room \u2014 towers need 3\u00D73 space and can\u2019t fully block the path.", needMax: "Reach max level to mutate.", noSlots: "No mutation slots \u2014 raise Mastery." }; ui.toast(M[ev.reason] || "Cannot do that here."); break; }
     case "waveClear":
       ui.toast(`Wave ${ev.wave} cleared! +${ev.bonus}`);
       if (ev.autosave) autosave();             // D3 — autosave after every wave
@@ -263,7 +265,7 @@ function onCanvasClick(ev) {
   const cell = corr.grid[r * game.state.grid.cols + c];
   if (cell === 2) { const tw = towerAt(corr, c, r); if (tw) { ui.openTowerPanel(corr, tw); return; } }
   if (near) { ui.openEnemyPanel(near); return; }
-  if (cell === 0) { ui.openBuildMenu(corr, { c, r }); return; }
+  if (cell === 0) { game.buildSpot = findBuildSpot(game.state, game.me, corr.index, c, r); ui.openBuildMenu(corr, { c, r }); return; }
   ui.closeAllPanels();
 }
 function towerAt(corr, c, r) { const S = DB.CONFIG.towerSize; for (const t of corr.towers) if (c >= t.c && c < t.c + S && r >= t.r && r < t.r + S) return t; return null; }
@@ -489,9 +491,14 @@ function preventBrowserGestures() {
 }
 
 function registerServiceWorker() {
+  // Service worker temporarily DISABLED during active development: it was caching
+  // old module files and hiding updates. We actively unregister any existing SW
+  // and clear its caches so every load fetches fresh files. Re-enable for offline
+  // play once the game is stable (replace this body with navigator.serviceWorker.register("sw.js")).
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+    navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
   }
+  if (window.caches && caches.keys) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
