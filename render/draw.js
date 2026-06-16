@@ -164,9 +164,10 @@ export function createRenderer(opts) {
     for (let r = 0; r < G.rows; r++) for (let c = 0; c < G.cols; c++) if (corr.grid[r * G.cols + c] === 1) drawObstacle(ox + c * ts, oy + r * ts, ts, el, (r + c) % 2);
     drawPortal(corr.entrance, ts, ox, oy, el, true);
     drawPortal(corr.exit, ts, ox, oy, el, false);
-    // build preview
-    if (view.buildTile && view.buildMenuOpen) {
-      const bx = ox + (view.buildTile.c - 1) * ts, by = oy + (view.buildTile.r - 1) * ts, bs = ts * 3;
+    // build preview — at the ACTUAL spot the sim would build (view.buildSpot), or hidden
+    if (view.buildMenuOpen && view.buildSpot) {
+      const sp = view.buildSpot;
+      const bx = ox + sp.c * ts, by = oy + sp.r * ts, bs = ts * 3;
       if (!assets.draw("assets/ui/build-preview.PNG", bx, by, bs, bs)) { ctx.fillStyle = "rgba(80,255,120,.25)"; ctx.fillRect(bx, by, bs, bs); }
     }
     for (const tw of corr.towers) drawTower(tw, ts, ox, oy, el, view);
