@@ -58,6 +58,7 @@ export function createState(bal, cfg) {
     projectiles: [],
     nextId: 1,
     coopLives: 0,
+    netSpeed: 1,                          // synced sim-speed multiplier (host-controlled in MP)
     finished: false,
     events: [],                           // transient, shell-facing, cleared each step
   };
@@ -181,6 +182,7 @@ function applyCommand(state, cmd) {
     case "MutateTower":  cmdMutate(state, pl, cmd); break;
     case "StartWave":    cmdStartWave(state, pl, cmd); break;
     case "SendEnemy":    cmdSendEnemy(state, pl, cmd); break;
+    case "SetSpeed":     if (cmd.player === 0) { const sp = cmd.speed | 0; state.netSpeed = sp < 1 ? 1 : (sp > 3 ? 3 : sp); } break;
     case "Ack":          break; // heartbeat, no state change
   }
 }
