@@ -17,7 +17,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js";
 
 const firebaseConfig = {
-  apiKey: "redacted",
+  apiKey: "AIzaSyCJOorkfQX1P6G-NCdqzifH-xVnYAE9ej4",
   authDomain: "circle-tower-defense.firebaseapp.com",
   databaseURL: "https://circle-tower-defense-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "circle-tower-defense",
