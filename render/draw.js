@@ -244,15 +244,43 @@ export function createRenderer(opts) {
     const px = e.px == null ? TILE(e.fx) : e.px + (TILE(e.fx) - e.px) * alpha;
     const py = e.py == null ? TILE(e.fy) : e.py + (TILE(e.fy) - e.py) * alpha;
     const x = ox + px * ts, y = oy + py * ts, r = TILE(e.def.radius) * ts * 2.2;
-    const asset = e.def.asset || `assets/enemies/${e.type}.PNG`;
-    if (!assets.draw(asset, x - r, y - r, r * 2, r * 2)) { ctx.fillStyle = e.def.color || "#d96b4a"; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
-    if (e.boss && !assets.draw("assets/ui/enemy-boss-ring.PNG", x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2)) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); }
-    if (e.id === view.selectedEnemyId) { ctx.strokeStyle = "#ffe066"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, 7); ctx.stroke(); }
+    const dbE = DB.ENEMIES[e.type] || {};
+    const asset = dbE.asset || `assets/enemies/${e.type}.PNG`;
+    if (!assets.draw(asset, x - r, y - r, r * 2, r * 2)) {
+      ctx.fillStyle = e.statuses && e.statuses["frozen"] ? "#bff0ff" : (dbE.color || "#d96b4a");
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    }
+    // boss ring
+    if (e.boss && !assets.draw("assets/ui/enemy-boss-ring.PNG", x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2)) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+    }
+    // selected ring
+    if (e.id === view.selectedEnemyId && !assets.draw("assets/ui/enemy-selected-ring.PNG", x - r - 6, y - r - 6, (r + 6) * 2, (r + 6) * 2)) {
+      ctx.strokeStyle = "#ffe066"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, 7); ctx.stroke();
+    }
+    // origin-element ring (shows which corridor the enemy came from)
+    const oid = view.player.elements[e.originIndex];
+    const oel = DB.ELEMENTS[oid];
+    if (oel && !assets.draw(`assets/ui/origin-rings/${oid}.PNG`, x - r - 3, y - r - 3, (r + 3) * 2, (r + 3) * 2)) {
+      ctx.strokeStyle = oel.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.stroke();
+    }
+    // sent marker (competitive)
     if (e.sent) { ctx.strokeStyle = "#ff5fa2"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 7); ctx.stroke(); }
     // hp bar
     const w = r * 2, h = 4, hpc = Math.max(0, e.hp) / e.maxHp;
-    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(x - w / 2, y - r - 8, w, h);
-    ctx.fillStyle = hpc > 0.5 ? "#5fe07a" : hpc > 0.25 ? "#ffd23d" : "#ff4d6d"; ctx.fillRect(x - w / 2, y - r - 8, w * hpc, h);
+    if (!assets.draw("assets/ui/hpbar-frame.PNG", x - w / 2, y - r - 10, w, 6)) { ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(x - w / 2, y - r - 8, w, h); }
+    let hpAsset = hpc <= 0.25 ? "assets/ui/hpbar-red.PNG" : hpc <= 0.5 ? "assets/ui/hpbar-yellow.PNG" : "assets/ui/hpbar-green.PNG";
+    if (!assets.draw(hpAsset, x - w / 2, y - r - 8, w * hpc, h)) {
+      ctx.fillStyle = hpc > 0.5 ? "#5fe07a" : hpc > 0.25 ? "#ffd23d" : "#ff4d6d"; ctx.fillRect(x - w / 2, y - r - 8, w * hpc, h);
+    }
+    // status icon (first non-adaptive status)
+    const sk = (e.statusKeys || []).filter(k => DB.STATUSES[k] && !DB.STATUSES[k].adaptive);
+    if (sk.length) {
+      const st = DB.STATUSES[sk[0]];
+      if (!assets.draw(st.asset || `assets/status/${sk[0]}.PNG`, x + r - 4, y - r - 4, 12, 12)) {
+        ctx.fillStyle = st.color; ctx.beginPath(); ctx.arc(x + r, y - r, 4, 0, 7); ctx.fill();
+      }
+    }
     if (e.loopCount > 0) { ctx.fillStyle = "#ffd23d"; ctx.font = "bold " + (ts * 0.4) + "px system-ui"; ctx.textAlign = "center"; ctx.fillText("↻" + e.loopCount, x, y + r + 12); }
   }
 
