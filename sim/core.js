@@ -215,9 +215,9 @@ function cmdBuild(state, pl, cmd) {
   const def = state.bal.towers[cmd.towerType];
   if (!def) return;
   if (def.slot >= unlockedTowerSlots(cmd.masteryLevel || 5)) return;
-  if (!canAfford(state, pl, def.cost, def.element)) return;
+  if (!canAfford(state, pl, def.cost, def.element)) { state.events.push({ kind: "reject", player: pl.id, reason: "funds" }); return; }
   const spot = findValidSpot(state, corr, cmd.gx, cmd.gy);
-  if (!spot) return;
+  if (!spot) { state.events.push({ kind: "reject", player: pl.id, reason: "noRoom" }); return; }
   placeTower(state, corr, def, spot.c, spot.r);
   spend(state, pl, def.cost, def.element);
 }
@@ -238,7 +238,7 @@ function cmdUpgrade(state, pl, cmd) {
   const tw = corr.towers.find(t => t.id === cmd.towerId); if (!tw) return;
   if (tw.level >= state.bal.maxLevel) return;
   const cost = upgradeCost(state, tw.def, tw.level);
-  if (!canAfford(state, pl, cost, tw.def.element)) return;
+  if (!canAfford(state, pl, cost, tw.def.element)) { state.events.push({ kind: "reject", player: pl.id, reason: "funds" }); return; }
   spend(state, pl, cost, tw.def.element);
   tw.level++;
 }
@@ -246,9 +246,9 @@ function cmdUpgrade(state, pl, cmd) {
 function cmdMutate(state, pl, cmd) {
   const corr = pl.corridors[cmd.corridorId]; if (!corr) return;
   const tw = corr.towers.find(t => t.id === cmd.towerId); if (!tw) return;
-  if (tw.level < state.bal.maxLevel) return;
+  if (tw.level < state.bal.maxLevel) { state.events.push({ kind: "reject", player: pl.id, reason: "needMax" }); return; }
   const slots = mutationSlotsAvailable(cmd.masteryLevel || 5);
-  if (tw.mutations.length >= slots) return;
+  if (tw.mutations.length >= slots) { state.events.push({ kind: "reject", player: pl.id, reason: "noSlots" }); return; }
   if (tw.mutations.includes(cmd.mutId)) return;
   if (!tw.def.mutations.find(m => m.id === cmd.mutId)) return;
   tw.mutations.push(cmd.mutId);
@@ -274,7 +274,7 @@ function cmdStartWave(state, pl, cmd) {
   }
   pl.waveActive = true;
   pl.phase = "wave";
-  state.events.push({ kind: "wave", player: pl.id, wave: pl.wave });
+  state.events.push({ kind: "wave", player: pl.id, wave: pl.wave, boss: (pl.wave % state.bal.bossEvery === 0) });
 }
 
 // Competitive: spend gold to spawn extra enemies on a target, builds income (§8).
@@ -313,6 +313,14 @@ function mutationSlotsAvailable(masteryLevel) {
   if (masteryLevel >= 5) return 2;
   if (masteryLevel >= 3) return 1;
   return 0;
+}
+
+// Read-only query used by the shell to preview where a tower would actually be
+// placed (mirrors cmdBuild). Self-reverting; safe to call between sim ticks.
+export function findBuildSpot(state, player, corridorId, gx, gy) {
+  const pl = state.players[player]; if (!pl) return null;
+  const corr = pl.corridors[corridorId]; if (!corr) return null;
+  return findValidSpot(state, corr, gx, gy);
 }
 
 // ---------------------------------------------------------------------------
