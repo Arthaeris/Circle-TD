@@ -62,7 +62,7 @@ const view = {
   get player() { return game.state.players[game.me]; },
   get screen() { return game.screen; }, get view() { return game.view; },
   get activeCorridor() { return game.activeCorridor; },
-  get time() { return game.clock; }, get speed() { return game.speed; },
+  get time() { return game.clock; }, get speed() { return game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1); },
   get selectedTowerId() { return game.selectedTowerId; }, set selectedTowerId(x) { game.selectedTowerId = x; },
   get selectedEnemyId() { return game.selectedEnemyId; }, set selectedEnemyId(x) { game.selectedEnemyId = x; },
   get buildTile() { return game.buildTile; }, set buildTile(x) { game.buildTile = x; },
@@ -101,13 +101,9 @@ function makeSoloDriver(state) {
   return {
     queue(c) { pending.push(c); },
     tick() {
-      // solo respects the local speed multiplier by running N ticks
-      for (let i = 0; i < game.speed; i++) {
-        const cmds = pending; pending = [];
-        step(state, C.orderCommands(cmds), SIM_DT);
-        afterTick(state);
-        if (state.finished) break;
-      }
+      const cmds = pending; pending = [];
+      step(state, C.orderCommands(cmds), SIM_DT);
+      afterTick(state);
     },
   };
 }
@@ -118,7 +114,7 @@ function makeNetDriver(state, ls) {
     queue(c) { pending.push(c); },          // speed is fixed (×1) in multiplayer
     tick() {
       ls.produce(pending); pending = [];
-      ls.advance(2);
+      ls.advance(30);
     },
   };
 }
@@ -321,6 +317,7 @@ function boot() {
   loop = createLoop({
     onTick: () => { if (game.driver) game.driver.tick(); },
     onFrame: (dt, running) => { if (running) game.clock += dt; }, // real wall-clock (speed-independent)
+    getSpeed: () => game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1),
     onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
     isRunning: () => {
       if (game.screen !== "game" || game.paused) return false;
@@ -358,10 +355,14 @@ function bindUI() {
   bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + game.state.players[game.me].corridorCount) % game.state.players[game.me].corridorCount));
   bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % game.state.players[game.me].corridorCount));
   bind("quick-start-wave", () => cmd.startWave());
-  bind("quick-speed-cycle", () => { if (game.gameMode === "solo") { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); } else ui.toast("Speed is fixed in multiplayer"); });
+  bind("quick-speed-cycle", () => {
+    if (game.gameMode === "solo") { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); }
+    else if (game.lobby && game.lobby.host) { const ns = ((game.state.netSpeed || 1) >= 3) ? 1 : (game.state.netSpeed || 1) + 1; emit(C.setSpeed(game.me, ns)); ui.toast("Speed \u2192 \u00D7" + ns); }
+    else ui.toast("Only the host can change speed");
+  });
   bind("btn-settings-ingame", () => togglePause(true));
   bind("pause-resume", () => togglePause(false));
-  bind("pause-restart", () => { togglePause(false); startRun({ mode: game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
+  bind("pause-restart", () => { if (game.gameMode !== "solo") { ui.toast("Restart is solo only"); return; } togglePause(false); startRun({ mode: game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
   bind("pause-save", () => { autosave(); ui.toast("Run saved to this device"); });
   bind("pause-exit", () => { togglePause(false); showScreen("menu"); refreshMenu(); });
   bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
@@ -411,7 +412,12 @@ function updateGameModeButtons() {
     b.classList.toggle("sel", b.dataset.gamemode === setup.gameMode);
   });
 }
-function togglePause(force) { if (game.gameMode !== "solo") { ui.toast("Can\u2019t pause in multiplayer"); return; } game.paused = force != null ? force : !game.paused; const o = $("pause-overlay"); if (o) o.classList.toggle("show", game.paused); }
+function togglePause(force) {
+  const o = $("pause-overlay");
+  const want = force != null ? force : !(o && o.classList.contains("show"));
+  if (o) o.classList.toggle("show", want);
+  if (game.gameMode === "solo") game.paused = want; // multiplayer: never pause the shared sim
+}
 
 function fieldBottomInset() {
   const stage = $("game-stage"); if (!stage) return 12;
