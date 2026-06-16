@@ -167,7 +167,8 @@ const setup = { mode: "loop", corridors: 4, economy: "shared", status: "standard
 function openSetup() {
   const avail = DB.availableElements(meta.mastery);
   setup.elements = []; for (let i = 0; i < 8; i++) setup.elements.push(avail[i % avail.length]);
-  showScreen("setup"); ui.renderSetup(setup, DB.availableElements(meta.mastery));
+  if (lobbyPlayerCount() < 2 && setup.gameMode !== "solo") setup.gameMode = "solo";
+  showScreen("setup"); ui.renderSetup(setup, DB.availableElements(meta.mastery)); updateGameModeButtons();
 }
 
 function startRun(cfg, seed) {
@@ -236,7 +237,7 @@ function setView(v, instant) {
   game.view = v; ui.closeAllPanels();
   const nav = $("field-nav"); if (nav) nav.classList.toggle("show", v === "field");
   const ov = $("enemy-overview"); if (ov) ov.classList.toggle("show", v === "world");
-  if (v === "field") updateCorridorName();
+  if (v === "field") { updateCorridorName(); clampFieldCamera(); }
 }
 function enterCorridor(i) { game.activeCorridor = i; if (game.view === "field") { ui.closeAllPanels(); updateCorridorName(); } else setView("field"); }
 function updateCorridorName() { const corr = game.state.players[game.me].corridors[game.activeCorridor]; if (!corr) return; const el = DB.ELEMENTS[corr.element]; const nm = $("corridor-name"); if (nm) nm.innerHTML = `${el.icon} ${el.name} Corridor`; }
@@ -290,7 +291,7 @@ function endScreen(win) {
 // ---------------------------------------------------------------------------
 // RESIZE
 // ---------------------------------------------------------------------------
-function resize() { if (renderer) renderer.resize(); }
+function resize() { if (renderer) renderer.resize(); if (game.state && game.view === "field") clampFieldCamera(); }
 
 // ---------------------------------------------------------------------------
 // BOOT
@@ -320,16 +321,18 @@ function boot() {
   loop = createLoop({
     onTick: () => { if (game.driver) game.driver.tick(); },
     onFrame: (dt, running) => { if (running) game.clock += dt; }, // real wall-clock (speed-independent)
-    onRender: (alpha) => { if (game.screen === "game") { if (game.view === "field" && game.state) clampFieldCamera(); renderer.render(view, alpha); } },
+    onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
     isRunning: () => game.screen === "game" && !game.paused && phaseRunning(),
   });
   loop.start();
-  setInterval(() => { if (game.screen === "game") ui.updateTopBar(); }, 250);
+  setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); } }, 250);
 }
 function phaseRunning() { if (!game.state) return false; const pl = game.state.players[game.me]; return ["build", "wave", "prep", "endboss"].includes(pl.phase); }
 
 function bindUI() {
   canvas.addEventListener("click", onCanvasClick);
+  const ovp = $("enemy-overview");
+  if (ovp) ovp.addEventListener("click", (e) => { if (e.target.closest(".ov-head")) ovp.classList.toggle("collapsed"); });
   bindTouch();
   bind("btn-new-run", openSetup);
   bind("btn-continue", () => { if (hasRun()) continueRun(); });
@@ -340,7 +343,12 @@ function bindUI() {
   document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { setup.mode = b.dataset.mode; if (setup.mode === "single") setup.corridors = 1; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-econ]").forEach((b) => b.onclick = () => { setup.economy = b.dataset.econ; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { setup.status = b.dataset.status; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
-  document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => { setup.gameMode = b.dataset.gamemode; document.querySelectorAll("[data-gamemode]").forEach((x) => x.classList.toggle("sel", x === b)); if (setup.gameMode !== "solo") ui.toast("Multiplayer: create/join a room from the menu, then start."); });
+  document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => {
+    const mp = b.dataset.gamemode !== "solo";
+    if (mp && lobbyPlayerCount() < 2) { ui.toast("Join a multiplayer room with another player first."); return; }
+    setup.gameMode = b.dataset.gamemode;
+    updateGameModeButtons();
+  });
   document.querySelectorAll("[data-fps]").forEach((b) => b.onclick = () => { if (loop) loop.setRenderFps(+b.dataset.fps); document.querySelectorAll("[data-fps]").forEach((x) => x.classList.toggle("sel", x === b)); ui.toast("Render rate: " + b.dataset.fps + " fps"); });
   bind("btn-world", () => setView("world"));
   bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + game.state.players[game.me].corridorCount) % game.state.players[game.me].corridorCount));
@@ -390,6 +398,15 @@ function bindUI() {
   });
 }
 function bind(id, fn) { const e = $(id); if (e) e.onclick = fn; }
+function lobbyPlayerCount() { return (game.lobby && game.lobby.room && game.lobby.room.players) ? Object.keys(game.lobby.room.players).length : 0; }
+function updateGameModeButtons() {
+  const enabled = lobbyPlayerCount() >= 2;
+  document.querySelectorAll("[data-gamemode]").forEach((b) => {
+    const mp = b.dataset.gamemode !== "solo";
+    b.classList.toggle("disabled", mp && !enabled);
+    b.classList.toggle("sel", b.dataset.gamemode === setup.gameMode);
+  });
+}
 function togglePause(force) { game.paused = force != null ? force : !game.paused; const o = $("pause-overlay"); if (o) o.classList.toggle("show", game.paused); }
 
 function fieldBottomInset() {
@@ -457,7 +474,7 @@ async function mpCreateRoom() {
   try {
     await window.CTWMultiplayer.createRoom(roomId, playerId, { codeVersion: DB.codeVersion, contentHash: DB.contentHash });
     game.lobby = { roomId, playerId, room: null, host: true };
-    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); });
+    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); updateGameModeButtons(); });
     openLobby(); ui.toast("Room created: " + roomId);
   } catch (err) { ui.toast("Create failed: " + err.message); }
 }
@@ -468,7 +485,7 @@ async function mpJoinRoom() {
   try {
     await window.CTWMultiplayer.joinRoom(roomId, playerId);
     game.lobby = { roomId, playerId, room: null, host: false };
-    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); });
+    window.CTWMultiplayer.watchRoom(roomId, (room) => { if (game.lobby) game.lobby.room = room; ui.renderMultiplayerLobby(game.lobby); updateGameModeButtons(); });
     openLobby(); ui.toast("Joined room: " + roomId);
   } catch (err) { ui.toast("Join failed: " + err.message); }
 }
