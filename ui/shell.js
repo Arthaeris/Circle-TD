@@ -97,15 +97,17 @@ export function createUI(opts) {
     const slots = DB.mutationSlotsAvailable(masteryLevel(tw.def.element));
     const expNeed = tw.expert < 5 ? DB.CONFIG.expertThresholds[tw.expert] : tw.kills;
     const expPct = tw.expert < 5 ? Math.min(1, tw.kills / expNeed) : 1;
+    const cur = towerView(def, tw.level, tw.expert);
+    const nxt = maxed ? null : towerView(def, tw.level + 1, tw.expert);
     let html = `<button class="panel-close" id="tp-close">✕</button>
       <div class="tp-head" style="--ec:${el.color}"><span class="tp-icon">${el.icon}</span><div><div class="tp-name">${def.name}</div><div class="tp-sub">${el.name} · ${def.archetype}</div></div></div>
       <div class="tp-levels"><span class="badge">Lv ${tw.level}/10</span><span class="badge gold">Expert ${tw.expert}/5</span></div>
       <div class="exp-bar"><div style="width:${expPct * 100}%"></div></div>
       <div class="exp-label">${tw.expert < 5 ? tw.kills + " / " + expNeed + " kills" : "MAX EXPERTISE"} · ${tw.kills} total kills</div>
       <div class="tp-stats">
-        ${statRow("Damage", def.damage)}
-        ${statRow("Range", def.range.toFixed(1))}
-        ${statRow("Atk Speed", def.fireRate.toFixed(2))}
+        ${statRow("Damage", cur.dmg.toFixed(0), nxt && nxt.dmg.toFixed(0))}
+        ${statRow("Range", cur.range.toFixed(1), nxt && nxt.range.toFixed(1))}
+        ${statRow("Atk Speed", cur.rate.toFixed(2), nxt && nxt.rate.toFixed(2))}
         ${def.status ? `<div class="tp-eff">${DB.STATUSES[def.status].icon} Applies ${DB.STATUSES[def.status].name}</div>` : ""}
       </div>
       <div class="tp-actions">
@@ -123,7 +125,15 @@ export function createUI(opts) {
     $("tp-sell").onclick = () => { cmd.sell(corr.index, tw.id); closeAllPanels(); };
     p.querySelectorAll("[data-mut]").forEach((b) => b.onclick = () => cmd.mutate(corr.index, tw.id, b.dataset.mut));
   }
-  function statRow(label, val) { return `<div class="stat-row"><span>${label}</span><span>${val}</span></div>`; }
+  function statRow(label, val, next) { return `<div class="stat-row"><span>${label}</span><span>${val}${(next != null && String(next) !== String(val)) ? ` <em>\u2192 ${next}</em>` : ""}</span></div>`; }
+  // display-only stat projection (mirrors core scaling: per-level + expert bonus)
+  function towerView(def, level, expert) {
+    const S = DB.SCALING, C = DB.CONFIG;
+    const dmg = def.damage * Math.pow(1 + S.damagePerLevel, level - 1) * (1 + (C.expertDamageBonus[expert] || 0));
+    const rate = def.fireRate * Math.pow(1 + S.fireRatePerLevel, level - 1);
+    const range = def.range + S.rangePerLevel * (level - 1);
+    return { dmg, rate, range };
+  }
 
   // ---- enemy panel ---------------------------------------------------------
   function openEnemyPanel(e) {
@@ -142,14 +152,27 @@ export function createUI(opts) {
     $("ep-close").onclick = closeAllPanels;
   }
 
+  // ---- live panel refresh (tower stats / enemy hp+status update in place) ----
+  function refreshPanels() {
+    const v = getView(); if (!v.state) return;
+    if (v.selectedTowerId) {
+      let found = null, fcorr = null;
+      for (const c of v.player.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
+      if (found) openTowerPanel(fcorr, found); else closeAllPanels();
+    } else if (v.selectedEnemyId) {
+      const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.me);
+      if (e && e.alive) openEnemyPanel(e); else closeAllPanels();
+    }
+  }
+
   // ---- setup screen --------------------------------------------------------
   function renderSetup(setup, availElements) {
     document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("sel", b.dataset.mode === setup.mode));
     const cc = $("corridor-buttons");
     if (cc && !cc.dataset.built) {
-      cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
+      cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { if (setup.mode === "single") return; setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
     }
-    if (cc) cc.querySelectorAll(".chip").forEach((b) => b.classList.toggle("sel", +b.dataset.cn === setup.corridors));
+    if (cc) cc.querySelectorAll(".chip").forEach((b) => { b.classList.toggle("sel", +b.dataset.cn === setup.corridors); b.classList.toggle("disabled", setup.mode === "single"); });
     const shape = $("shape-name"); if (shape) shape.textContent = DB.SHAPE_NAMES[setup.corridors] || "";
     if (setup.mode === "single") setup.corridors = 1;
     document.querySelectorAll("[data-econ]").forEach((b) => b.classList.toggle("sel", b.dataset.econ === setup.economy));
@@ -241,7 +264,7 @@ export function createUI(opts) {
     if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, drawShapePreview, openMastery, renderMultiplayerLobby };
+  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
 }
 
 export default { createUI };
