@@ -90,7 +90,8 @@ export function createState(bal, cfg) {
     };
     for (const e of bal.elementOrder) player.essence[e] = bal.startEssence;
 
-    for (let i = 0; i < pc.corridorCount; i++) {
+    const buildField = !((cfg.gameMode === "coop") && pi > 0); // co-op: one shared field on player 0
+    for (let i = 0; buildField && i < pc.corridorCount; i++) {
       const grid = pf.makeGrid(G.cols, G.rows);
       const corr = {
         index: i,
@@ -187,6 +188,7 @@ function applyCommand(state, cmd) {
   }
 }
 
+function fieldOwner(state, pl) { return state.gameMode === "coop" ? state.players[0] : pl; }
 function essenceOf(pl, element) { return pl.essence[element] | 0; }
 function canAfford(state, pl, amount, element) {
   return state.economy === "shared" ? pl.gold >= amount : essenceOf(pl, element) >= amount;
@@ -212,7 +214,7 @@ function totalInvested(state, tw) {
 }
 
 function cmdBuild(state, pl, cmd) {
-  const corr = pl.corridors[cmd.corridorId];
+  const corr = fieldOwner(state, pl).corridors[cmd.corridorId];
   if (!corr) return;
   const def = state.bal.towers[cmd.towerType];
   if (!def) return;
@@ -220,12 +222,12 @@ function cmdBuild(state, pl, cmd) {
   if (!canAfford(state, pl, def.cost, def.element)) { state.events.push({ kind: "reject", player: pl.id, reason: "funds" }); return; }
   const spot = findValidSpot(state, corr, cmd.gx, cmd.gy);
   if (!spot) { state.events.push({ kind: "reject", player: pl.id, reason: "noRoom" }); return; }
-  placeTower(state, corr, def, spot.c, spot.r);
+  placeTower(state, corr, def, spot.c, spot.r, pl.id);
   spend(state, pl, def.cost, def.element);
 }
 
 function cmdSell(state, pl, cmd) {
-  const corr = pl.corridors[cmd.corridorId]; if (!corr) return;
+  const corr = fieldOwner(state, pl).corridors[cmd.corridorId]; if (!corr) return;
   const ti = corr.towers.findIndex(t => t.id === cmd.towerId); if (ti < 0) return;
   const tw = corr.towers[ti];
   const S = state.bal.towerSize, G = state.grid;
@@ -236,7 +238,7 @@ function cmdSell(state, pl, cmd) {
 }
 
 function cmdUpgrade(state, pl, cmd) {
-  const corr = pl.corridors[cmd.corridorId]; if (!corr) return;
+  const corr = fieldOwner(state, pl).corridors[cmd.corridorId]; if (!corr) return;
   const tw = corr.towers.find(t => t.id === cmd.towerId); if (!tw) return;
   if (tw.level >= state.bal.maxLevel) return;
   const cost = upgradeCost(state, tw.def, tw.level);
@@ -246,7 +248,7 @@ function cmdUpgrade(state, pl, cmd) {
 }
 
 function cmdMutate(state, pl, cmd) {
-  const corr = pl.corridors[cmd.corridorId]; if (!corr) return;
+  const corr = fieldOwner(state, pl).corridors[cmd.corridorId]; if (!corr) return;
   const tw = corr.towers.find(t => t.id === cmd.towerId); if (!tw) return;
   if (tw.level < state.bal.maxLevel) { state.events.push({ kind: "reject", player: pl.id, reason: "needMax" }); return; }
   const slots = mutationSlotsAvailable(cmd.masteryLevel || 5);
@@ -257,26 +259,26 @@ function cmdMutate(state, pl, cmd) {
 }
 
 function cmdStartWave(state, pl, cmd) {
-  if (pl.phase === "prep") { summonEndBoss(state, pl); return; }
-  if (pl.phase === "victory" || pl.phase === "defeat" || pl.phase === "endboss") return;
-  if (state.mode !== "endless" && pl.wave >= pl.totalWaves) return;
-  pl.wave++;
-  const entries = generateWave(pl.wave, pl.corridorCount, state.bal.bossEvery);
+  const fp = fieldOwner(state, pl); // co-op: the single shared field
+  if (fp.phase === "prep") { summonEndBoss(state, fp); return; }
+  if (fp.phase === "victory" || fp.phase === "defeat" || fp.phase === "endboss") return;
+  if (state.mode !== "endless" && fp.wave >= fp.totalWaves) return;
+  fp.wave++;
+  const entries = generateWave(fp.wave, fp.corridorCount, state.bal.bossEvery);
   let originRot = 0;
   for (const group of entries) {
     for (let k = 0; k < group.count; k++) {
       const origin = group.type === "boss"
-        ? rng.nextInt(state.seedSim, pl.corridorCount)
-        : (originRot++ % pl.corridorCount);
-      // spawn time as a tick offset (deterministic): delay + k*gap, in ticks
+        ? rng.nextInt(state.seedSim, fp.corridorCount)
+        : (originRot++ % fp.corridorCount);
       const atTick = state.tick + fx.toInt(fx.mul(group.delay + fx.mul(fx.fromInt(k), group.gap), fx.fromInt(SIM_HZ)));
-      pl.spawnQueue.push({ type: group.type, origin, atTick, sent: false });
-      pl.corridors[origin].spawnedTotal++;
+      fp.spawnQueue.push({ type: group.type, origin, atTick, sent: false });
+      fp.corridors[origin].spawnedTotal++;
     }
   }
-  pl.waveActive = true;
-  pl.phase = "wave";
-  state.events.push({ kind: "wave", player: pl.id, wave: pl.wave, boss: (pl.wave % state.bal.bossEvery === 0) });
+  fp.waveActive = true;
+  fp.phase = "wave";
+  state.events.push({ kind: "wave", player: fp.id, wave: fp.wave, boss: (fp.wave % state.bal.bossEvery === 0) });
 }
 
 // Competitive: spend gold to spawn extra enemies on a target, builds income (§8).
@@ -364,10 +366,10 @@ function findValidSpot(state, corr, gx, gy) {
     }
   return null;
 }
-function placeTower(state, corr, def, c, r) {
+function placeTower(state, corr, def, c, r, owner) {
   const S = state.bal.towerSize, G = state.grid;
   const tw = {
-    id: state.nextId++, def, c, r,
+    id: state.nextId++, def, c, r, owner: owner || 0,
     cx: fx.fromInt(c) + fx.fromInt(S) / 2,  // fixed-point centre (tiles)
     cy: fx.fromInt(r) + fx.fromInt(S) / 2,
     level: 1, expert: 0, kills: 0, mutations: [], cd: 0,
@@ -575,7 +577,7 @@ function removeEnemy(state, e, idxHint) {
 function loseLife(state, pl, n) {
   if (state.gameMode === "coop") {
     state.coopLives -= n;
-    if (state.coopLives <= 0) { state.coopLives = 0; for (const p of state.players) defeat(state, p); }
+    if (state.coopLives <= 0) { state.coopLives = 0; defeat(state, state.players[0]); }
   } else {
     pl.lives -= n;
     if (pl.lives <= 0) { pl.lives = 0; defeat(state, pl); }
@@ -603,24 +605,24 @@ function damageEnemy(state, e, raw, tower, isDot) {
 function killEnemy(state, e, tower) {
   if (!e.alive) return;
   e.alive = false;
-  const pl = state.players[e.owner];
-  pl.stats.kills++;
+  const fieldPl = state.players[e.owner];
+  const creditPl = tower ? state.players[tower.owner] : fieldPl; // per-tower economy (co-op)
+  creditPl.stats.kills++;
 
-  // reward — defender keeps it; sent enemies pay a FIXED higher bounty (§8.2:
-  // not rising per sent enemy — a flat multiplier).
+  // reward — defender keeps it; sent enemies pay a FIXED higher bounty (§8.2).
   let r = e.reward;
   const tag = e.statuses["tagged"];
   if (tag) r = Math.round(r * (tag.def.value / fx.ONE));
   if (e.sent) r = fx.round(fx.mul(fx.fromInt(r), state.bal.competitive.sentBountyMult));
-  grantReward(state, pl, e, r);
+  grantReward(state, creditPl, e, r);
 
   if (tower) { tower.kills++; checkExpert(state, tower); }
-  pl.stats.score += e.boss ? 5000 : 25;
+  creditPl.stats.score += e.boss ? 5000 : 25;
 
   if (e.statuses["volatile"]) aoeAround(state, e, F(2.0), e.statuses["volatile"].def.value);
 
-  if (e.end) { removeEnemy(state, e); victory(state, pl); return; }
-  if (e.boss) pl.stats.bossesKilled++;
+  if (e.end) { removeEnemy(state, e); victory(state, fieldPl); return; }
+  if (e.boss) creditPl.stats.bossesKilled++;
   removeEnemy(state, e);
 }
 
@@ -934,7 +936,8 @@ function checkWaveState(state, pl) {
     if (pl.phase === "endboss") return;
     pl.phase = "build";
     const bonus = 40 + pl.wave * 12;
-    grantAll(state, pl, bonus);
+    if (state.gameMode === "coop") { for (const p of state.players) grantAll(state, p, bonus); }
+    else grantAll(state, pl, bonus);
     pl.stats.score += pl.wave * 100;
     state.events.push({ kind: "waveClear", player: pl.id, wave: pl.wave, bonus, autosave: true });
     if (state.mode !== "endless" && pl.wave >= pl.totalWaves) {
@@ -972,6 +975,11 @@ function defeat(state, pl) {
   maybeFinish(state);
 }
 function maybeFinish(state) {
+  if (state.gameMode === "coop") {
+    const f = state.players[0].phase;
+    if (f === "victory" || f === "defeat") state.finished = true;
+    return;
+  }
   const anyOngoing = state.players.some(p => p.phase !== "victory" && p.phase !== "defeat");
   if (!anyOngoing) state.finished = true;
 }
