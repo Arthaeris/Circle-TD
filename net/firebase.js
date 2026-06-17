@@ -17,7 +17,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCJOorkfQX1P6G-NCdqzifH-xVnYAE9ej4",
+  apiKey: "redacted",
   authDomain: "circle-tower-defense.firebaseapp.com",
   databaseURL: "https://circle-tower-defense-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "circle-tower-defense",
@@ -83,10 +83,11 @@ window.CTWMultiplayer = {
       });
     });
     return {
-      sendInputs: (tick, commands) => set(ref(db, `${base}/inputs/${localPlayer}/${tick}`), commands),
+      sendInputs: (turn, commands) => set(ref(db, `${base}/inputs/${localPlayer}/${turn}`), commands),
       onInputs: (cb) => inputCbs.push(cb),
-      sendHash: (tick, hash) => set(ref(db, `${base}/hash/${localPlayer}/${tick}`), hash),
+      sendHash: (turn, hash) => set(ref(db, `${base}/hash/${localPlayer}/${turn}`), hash),
       onHash: (cb) => hashCbs.push(cb),
+      pruneInputs: (beforeTurn) => { remove(ref(db, `${base}/inputs/${localPlayer}/${beforeTurn}`)); remove(ref(db, `${base}/hash/${localPlayer}/${beforeTurn}`)); },
     };
   },
 
