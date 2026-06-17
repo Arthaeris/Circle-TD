@@ -34,19 +34,20 @@ export function createUI(opts) {
     setText("lives", (v.state.gameMode === "coop" ? v.state.coopLives : pl.lives) + "/" + pl.maxLives);
     if (v.state.economy === "shared") setText("currency-display", "🪙 " + Math.floor(pl.gold));
     else { const cur = pl.elements[v.view === "field" ? v.activeCorridor : 0]; setText("currency-display", DB.ELEMENTS[cur].icon + " " + Math.floor(pl.essence[cur])); }
-    setText("wave-display", "Wave " + (v.state.mode === "endless" ? pl.wave : (pl.wave + "/" + pl.totalWaves)));
+    const fld = v.field || pl;
+    setText("wave-display", "Wave " + (v.state.mode === "endless" ? fld.wave : (fld.wave + "/" + fld.totalWaves)));
     const m = Math.floor(v.time / 60), s = Math.floor(v.time % 60);
     setText("match-time", (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s);
   }
 
   function updateEnemyOverview() {
     const ov = $("enemy-overview"); if (!ov) return;
-    const v = getView(), pl = v.player;
+    const v = getView(), fld = v.field;
     let html = `<div class="ov-head">Survivors by Origin</div>`;
-    for (let i = 0; i < pl.corridorCount; i++) {
-      const el = DB.ELEMENTS[pl.elements[i]];
-      let alive = 0; for (const e of v.state.enemies) if (e.owner === v.me && e.originIndex === i) alive++;
-      const total = pl.corridors[i].spawnedTotal, pct = total ? alive / total : 0;
+    for (let i = 0; i < fld.corridorCount; i++) {
+      const el = DB.ELEMENTS[fld.elements[i]];
+      let alive = 0; for (const e of v.state.enemies) if (e.owner === v.fieldId && e.originIndex === i) alive++;
+      const total = fld.corridors[i].spawnedTotal, pct = total ? alive / total : 0;
       html += `<div class="ov-row" data-ci="${i}"><span class="ov-el" style="color:${el.color}">${el.icon} ${el.name}</span><span class="ov-num">${alive}/${total}</span><div class="ov-bar"><div style="width:${pct * 100}%;background:${el.color}"></div></div></div>`;
     }
     ov.innerHTML = html;
@@ -54,7 +55,7 @@ export function createUI(opts) {
   }
 
   function updateWavePanel() {
-    const v = getView(), pl = v.player;
+    const v = getView(), pl = v.field;
     let label = "▶ Start Wave " + (pl.wave + 1);
     if (v.state.mode !== "endless" && pl.wave >= pl.totalWaves && pl.phase !== "prep") label = "Clear Enemies";
     if (pl.phase === "prep") label = "Summon Boss";
