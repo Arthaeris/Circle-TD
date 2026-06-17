@@ -25,7 +25,7 @@ import { step } from "../sim/core.js";
 import { hashState } from "../sim/hash.js";
 
 export const TURN_TICKS = 15;        // 15 ticks/turn @30Hz -> 2 turns/sec
-export const INPUT_DELAY = 1;        // turns of lookahead (~0.5s) — hides latency
+export const INPUT_DELAY = 2;        // turns of lookahead (~1s) — hides RTDB latency
 export const HASH_EVERY_TURNS = 8;   // checkpoint every ~4s
 export const STALL_AFTER = 20;       // advance() calls stuck before showing banner
 export const KEEP_TURNS = 12;        // keep this many recent turns before pruning
@@ -34,7 +34,7 @@ export function createLockstep(opts) {
   const state = opts.state, SIM_DT = opts.SIM_DT, transport = opts.transport;
   const localPlayer = opts.localPlayer, playerCount = opts.playerCount;
   const onStep = opts.onStep, onDesync = opts.onDesync, onStall = opts.onStall, onResume = opts.onResume;
-  const maxTicks = opts.maxTicks || 60;
+  const maxTicks = opts.maxTicks || 1; // run at most 1 sim tick per loop tick (the loop paces real time; >1 would gallop through the input buffer)
 
   const turnInputs = new Map();   // turn -> { player -> commands[] }
   const myHashes = new Map();
