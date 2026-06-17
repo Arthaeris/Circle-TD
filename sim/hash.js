@@ -60,7 +60,7 @@ export function hashState(state) {
     for (const corr of pl.corridors) {
       h = mixInt(h, corr.spawnedTotal);
       for (const t of corr.towers) {
-        h = mixInt(h, t.cx); h = mixInt(h, t.cy);
+        h = mixInt(h, t.cx); h = mixInt(h, t.cy); h = mixInt(h, t.owner | 0);
         h = mixInt(h, t.level); h = mixInt(h, t.expert); h = mixInt(h, t.kills);
         h = mixInt(h, t.cd);
       }
