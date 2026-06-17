@@ -18,6 +18,7 @@ export function createUI(opts) {
   const cmd = opts.cmd;               // command emitters {build, sell, upgrade, mutate, startWave, send}
   const masteryLevel = opts.masteryLevel || (() => 5);
   const getMeta = opts.getMeta || (() => ({ mastery: {}, elementWins: {} }));
+  let _twSig = null; // tower-panel content signature (avoid rebuilding every refresh)
 
   let toastT = null;
   function toast(msg) { const t = $("toast"); if (!t) return; t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
@@ -125,6 +126,7 @@ export function createUI(opts) {
     $("tp-upgrade").onclick = () => { if (!maxed) cmd.upgrade(corr.index, tw.id); };
     $("tp-sell").onclick = () => { cmd.sell(corr.index, tw.id); closeAllPanels(); };
     p.querySelectorAll("[data-mut]").forEach((b) => b.onclick = () => cmd.mutate(corr.index, tw.id, b.dataset.mut));
+    _twSig = tw.level + "/" + tw.expert + "/" + tw.kills + "/" + tw.mutations.length;
   }
   function statRow(label, val, next) { return `<div class="stat-row"><span>${label}</span><span>${val}${(next != null && String(next) !== String(val)) ? ` <em>\u2192 ${next}</em>` : ""}</span></div>`; }
   // display-only stat projection (mirrors core scaling: per-level + expert bonus)
@@ -158,10 +160,12 @@ export function createUI(opts) {
     const v = getView(); if (!v.state) return;
     if (v.selectedTowerId) {
       let found = null, fcorr = null;
-      for (const c of v.player.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
-      if (found) openTowerPanel(fcorr, found); else closeAllPanels();
+      for (const c of v.field.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
+      if (!found) { closeAllPanels(); _twSig = null; return; }
+      const sig = found.level + "/" + found.expert + "/" + found.kills + "/" + found.mutations.length;
+      if (sig !== _twSig) openTowerPanel(fcorr, found); // rebuild only when it actually changed -> buttons stay clickable
     } else if (v.selectedEnemyId) {
-      const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.me);
+      const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.fieldId);
       if (e && e.alive) openEnemyPanel(e); else closeAllPanels();
     }
   }
