@@ -55,11 +55,15 @@ function playMenuMusic() { if (!musicUnlocked || !musicMenu) return; if (musicGa
 function playGameMusic() { if (!musicUnlocked || !musicGame) return; if (musicMenu) musicMenu.pause(); if (musicGame.paused) musicGame.play().catch(() => {}); }
 
 function masteryLevel(el) { return (meta.mastery && meta.mastery[el]) || 0; }
+function fieldId() { return game.gameMode === "coop" ? 0 : game.me; }
+function fieldPlayer() { return game.state.players[fieldId()]; }
 
 // view object the renderer + ui read (player resolves live)
 const view = {
   get state() { return game.state; }, get me() { return game.me; },
   get player() { return game.state.players[game.me]; },
+  get fieldId() { return game.gameMode === "coop" ? 0 : game.me; },
+  get field() { return game.state.players[game.gameMode === "coop" ? 0 : game.me]; },
   get screen() { return game.screen; }, get view() { return game.view; },
   get activeCorridor() { return game.activeCorridor; },
   get time() { return game.clock; }, get speed() { return game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1); },
@@ -79,16 +83,16 @@ function emit(c) {
   if (!game.driver) return;
   c.player = game.me;
   if (c.masteryLevel == null && (c.type === "BuildTower" || c.type === "MutateTower")) {
-    const corr = game.state.players[game.me].corridors[c.corridorId];
+    const corr = fieldPlayer().corridors[c.corridorId];
     c.masteryLevel = corr ? masteryLevel(corr.element) : 5;
   }
   game.driver.queue(c);
 }
 const cmd = {
-  build: (corridorId, gx, gy, towerType) => emit(C.buildTower(game.me, corridorId, gx, gy, towerType, masteryLevel(game.state.players[game.me].corridors[corridorId].element))),
+  build: (corridorId, gx, gy, towerType) => emit(C.buildTower(game.me, corridorId, gx, gy, towerType, masteryLevel(fieldPlayer().corridors[corridorId].element))),
   sell: (corridorId, towerId) => emit(C.sellTower(game.me, corridorId, towerId)),
   upgrade: (corridorId, towerId) => emit(C.upgradeTower(game.me, corridorId, towerId)),
-  mutate: (corridorId, towerId, mutId) => emit(C.mutateTower(game.me, corridorId, towerId, mutId, masteryLevel(game.state.players[game.me].corridors[corridorId].element))),
+  mutate: (corridorId, towerId, mutId) => emit(C.mutateTower(game.me, corridorId, towerId, mutId, masteryLevel(fieldPlayer().corridors[corridorId].element))),
   startWave: () => emit(C.startWave(game.me)),
   send: (target, enemyType) => emit(C.sendEnemy(game.me, target, enemyType)),
 };
@@ -109,13 +113,9 @@ function makeSoloDriver(state) {
 }
 
 function makeNetDriver(state, ls) {
-  let pending = [];
   return {
-    queue(c) { pending.push(c); },          // speed is fixed (×1) in multiplayer
-    tick() {
-      ls.produce(pending); pending = [];
-      ls.advance(30);
-    },
+    queue(c) { ls.queueLocal([c]); },
+    tick() { ls.tickFrame(); },             // turn-based: produces turns + runs ready ticks
   };
 }
 
@@ -162,7 +162,7 @@ const setup = { mode: "loop", corridors: 4, economy: "shared", status: "standard
 function openSetup() {
   const avail = DB.availableElements(meta.mastery);
   setup.elements = []; for (let i = 0; i < 8; i++) setup.elements.push(avail[i % avail.length]);
-  if (lobbyPlayerCount() < 2 && setup.gameMode !== "solo") setup.gameMode = "solo";
+  if (!game.mpHosting && lobbyPlayerCount() < 2 && setup.gameMode !== "solo") setup.gameMode = "solo";
   showScreen("setup"); ui.renderSetup(setup, DB.availableElements(meta.mastery)); updateGameModeButtons();
 }
 
@@ -177,6 +177,7 @@ function startRun(cfg, seed) {
     mode: cfg.mode, gameMode: game.gameMode, economy: cfg.economy, statusMode: cfg.status, players,
   };
   game.state = createState(bal, stateCfg);
+  game.mpHosting = false;
   game.me = cfg.me || 0; game.speed = 1; game.clock = 0;
   game.view = "world"; game.activeCorridor = 0; game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
   game.selectedTowerId = game.selectedEnemyId = game.buildTile = null;
@@ -236,7 +237,7 @@ function setView(v, instant) {
   if (v === "field") { updateCorridorName(); clampFieldCamera(); }
 }
 function enterCorridor(i) { game.activeCorridor = i; if (game.view === "field") { ui.closeAllPanels(); updateCorridorName(); } else setView("field"); }
-function updateCorridorName() { const corr = game.state.players[game.me].corridors[game.activeCorridor]; if (!corr) return; const el = DB.ELEMENTS[corr.element]; const nm = $("corridor-name"); if (nm) nm.innerHTML = `${el.icon} ${el.name} Corridor`; }
+function updateCorridorName() { const corr = fieldPlayer().corridors[game.activeCorridor]; if (!corr) return; const el = DB.ELEMENTS[corr.element]; const nm = $("corridor-name"); if (nm) nm.innerHTML = `${el.icon} ${el.name} Corridor`; }
 function fieldTopInset() { const nav = $("field-nav"); if (!nav || !nav.classList.contains("show")) return 12; const stage = $("game-stage"); if (!stage) return 12; return Math.max(12, nav.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + 10); }
 function flash(color) { const o = $("screen-flash"); if (!o) return; o.style.background = color; o.classList.add("flash"); setTimeout(() => o.classList.remove("flash"), 200); }
 function clampZoom() { game.fieldCam.zoom = Math.max(1, Math.min(4, game.fieldCam.zoom)); }
@@ -245,7 +246,7 @@ function onCanvasClick(ev) {
   if (game.screen !== "game") return;
   const rect = canvas.getBoundingClientRect();
   const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
-  const pl = game.state.players[game.me];
+  const pl = fieldPlayer();
   if (game.view === "world") {
     if (game._vortex && pl.phase === "prep") { const dx = px - game._vortex.cx, dy = py - game._vortex.cy; if (dx * dx + dy * dy < game._vortex.r * game._vortex.r) { cmd.startWave(); return; } }
     const gates = renderer.gatePositions(view);
@@ -256,7 +257,7 @@ function onCanvasClick(ev) {
   const fxv = (px - ox) / ts, fyv = (py - oy) / ts;
   const corr = pl.corridors[game.activeCorridor];
   let near = null, nd = 0.7 * 0.7;
-  for (const e of game.state.enemies) { if (e.owner !== game.me || e.corridorIndex !== corr.index) continue; const ex = fx.toFloat(e.fx), ey = fx.toFloat(e.fy); const dx = fxv - ex, dy = fyv - ey, d = dx * dx + dy * dy; if (d < nd) { nd = d; near = e; } }
+  for (const e of game.state.enemies) { if (e.owner !== fieldId() || e.corridorIndex !== corr.index) continue; const ex = fx.toFloat(e.fx), ey = fx.toFloat(e.fy); const dx = fxv - ex, dy = fyv - ey, d = dx * dx + dy * dy; if (d < nd) { nd = d; near = e; } }
   const c = Math.floor(fxv), r = Math.floor(fyv);
   if (c < 0 || r < 0 || c >= game.state.grid.cols || r >= game.state.grid.rows) { ui.closeAllPanels(); return; }
   const cell = corr.grid[r * game.state.grid.cols + c];
@@ -339,12 +340,13 @@ function bindUI() {
   bind("btn-continue", () => { if (hasRun()) continueRun(); });
   bind("btn-mastery", () => ui.openMastery());
   bind("btn-menu-save", () => { const m = $("save-modal"); if (m) m.classList.add("show"); });
-  bind("btn-setup-back", () => showScreen("menu"));
-  bind("btn-start-run", () => { startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, elements: setup.elements }); });
+  bind("btn-setup-back", () => { if (game.mpHosting && game.lobby) { game.mpHosting = false; window.CTWMultiplayer.setRoomStatus(game.lobby.roomId, "lobby").catch(() => {}); openLobby(); } else showScreen("menu"); });
+  bind("btn-start-run", () => { if (game.mpHosting) { beginMultiplayerMatch(); return; } startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, elements: setup.elements }); });
   document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { setup.mode = b.dataset.mode; if (setup.mode === "single") setup.corridors = 1; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-econ]").forEach((b) => b.onclick = () => { setup.economy = b.dataset.econ; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { setup.status = b.dataset.status; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => {
+    if (game.mpHosting) { ui.toast("Match type is set by the room"); return; }
     const mp = b.dataset.gamemode !== "solo";
     if (mp && lobbyPlayerCount() < 2) { ui.toast("Join a multiplayer room with another player first."); return; }
     setup.gameMode = b.dataset.gamemode;
@@ -352,8 +354,8 @@ function bindUI() {
   });
   document.querySelectorAll("[data-fps]").forEach((b) => b.onclick = () => { if (loop) loop.setRenderFps(+b.dataset.fps); document.querySelectorAll("[data-fps]").forEach((x) => x.classList.toggle("sel", x === b)); ui.toast("Render rate: " + b.dataset.fps + " fps"); });
   bind("btn-world", () => setView("world"));
-  bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + game.state.players[game.me].corridorCount) % game.state.players[game.me].corridorCount));
-  bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % game.state.players[game.me].corridorCount));
+  bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + fieldPlayer().corridorCount) % fieldPlayer().corridorCount));
+  bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % fieldPlayer().corridorCount));
   bind("quick-start-wave", () => cmd.startWave());
   bind("quick-speed-cycle", () => {
     if (game.gameMode === "solo") { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); }
@@ -406,9 +408,10 @@ function bind(id, fn) { const e = $(id); if (e) e.onclick = fn; }
 function lobbyPlayerCount() { return (game.lobby && game.lobby.room && game.lobby.room.players) ? Object.keys(game.lobby.room.players).length : 0; }
 function updateGameModeButtons() {
   const enabled = lobbyPlayerCount() >= 2;
+  const locked = !!game.mpHosting; // match type fixed once configuring
   document.querySelectorAll("[data-gamemode]").forEach((b) => {
     const mp = b.dataset.gamemode !== "solo";
-    b.classList.toggle("disabled", mp && !enabled);
+    b.classList.toggle("disabled", locked || (mp && !enabled));
     b.classList.toggle("sel", b.dataset.gamemode === setup.gameMode);
   });
 }
@@ -482,6 +485,9 @@ function handleRoomUpdate(room) {
   game.lobby.room = room;
   ui.renderMultiplayerLobby(game.lobby);
   updateGameModeButtons();
+  if (room && room.status === "configuring" && !game.lobby.host && game.screen !== "game" && !game.lobby._cfgNoted) {
+    game.lobby._cfgNoted = true; ui.toast("Host is configuring the match…");
+  }
   if (room && room.status === "running" && room.match && !game.lobby.started) {
     game.lobby.started = true;
     startMultiplayerMatch(room.match);
@@ -520,17 +526,32 @@ async function mpStart() {
   const L = game.lobby; if (!L || !L.room || L.room.host !== L.playerId) return;
   const entries = Object.entries(L.room.players || {});
   if (!(entries.length >= 2 && entries.every(([, p]) => p.ready))) { ui.toast("Need at least 2 players, all ready."); return; }
+  // Go to the config screen; the host picks mode/corridors/economy, then Begin Run.
+  game.mpHosting = true;
+  setup.gameMode = L.hostMode || "competitive";
+  try { await window.CTWMultiplayer.setRoomStatus(L.roomId, "configuring"); } catch (e) {}
+  const lob = $("multiplayer-lobby"); if (lob) lob.classList.remove("show");
+  openSetup();
+  ui.toast("Configure the match, then press Begin Run");
+}
+
+// Host builds the match config from the setup screen and launches for everyone.
+async function beginMultiplayerMatch() {
+  const L = game.lobby; if (!L || !L.room) { ui.toast("Lobby lost"); return; }
+  const entries = Object.entries(L.room.players || {});
   entries.sort((a, b) => ((a[1].slot != null ? a[1].slot : 99) - (b[1].slot != null ? b[1].slot : 99)) || ((a[1].joinedAt || 0) - (b[1].joinedAt || 0)));
   const order = entries.map(([id]) => id);
+  const corridorCount = setup.mode === "single" ? 1 : setup.corridors;
   const match = {
     seed: (Math.random() * 1e9) | 0,
     gameMode: L.hostMode || "competitive",
-    mode: "loop", corridorCount: 4,
-    elements: ["fire", "ice", "nature", "storm"],
-    economy: "shared", statusMode: "standard",
+    mode: setup.mode, corridorCount: corridorCount,
+    elements: setup.elements.slice(0, corridorCount),
+    economy: setup.economy, statusMode: setup.status,
     order: order, startedAt: Date.now(),
   };
-  try { await window.CTWMultiplayer.setMatchStart(L.roomId, match); } catch (err) { ui.toast("Start failed: " + err.message); }
+  game.mpHosting = false;
+  try { await window.CTWMultiplayer.setMatchStart(L.roomId, match); } catch (err) { ui.toast("Start failed: " + err.message); game.mpHosting = true; }
 }
 
 function startMultiplayerMatch(match) {
