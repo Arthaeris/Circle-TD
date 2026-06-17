@@ -70,9 +70,12 @@ export function createLockstep(opts) {
     if (commands && commands.length) {
       payload = commands.map(function (c) { const o = Object.assign({}, c); o.player = localPlayer; o.seq = seqCounter++; return o; });
     } else {
-      payload = []; // empty turn = decoupled heartbeat
+      // Empty turn = a single Ack. IMPORTANT: must be NON-empty — Firebase RTDB
+      // silently drops empty arrays/objects, so a literal [] would never reach
+      // the peer and the turn would stall forever.
+      payload = [{ type: "Ack", player: localPlayer }];
     }
-    ensure(turn)[localPlayer] = payload.length ? payload : [{ type: "Ack", player: localPlayer }];
+    ensure(turn)[localPlayer] = payload;
     transport.sendInputs(turn, payload);
   }
 
