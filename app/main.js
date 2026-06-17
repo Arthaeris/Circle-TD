@@ -263,7 +263,7 @@ function onCanvasClick(ev) {
   const cell = corr.grid[r * game.state.grid.cols + c];
   if (cell === 2) { const tw = towerAt(corr, c, r); if (tw) { ui.openTowerPanel(corr, tw); return; } }
   if (near) { ui.openEnemyPanel(near); return; }
-  if (cell === 0) { game.buildSpot = findBuildSpot(game.state, game.me, corr.index, c, r); ui.openBuildMenu(corr, { c, r }); return; }
+  if (cell === 0) { game.buildSpot = findBuildSpot(game.state, fieldId(), corr.index, c, r); ui.openBuildMenu(corr, { c, r }); return; }
   ui.closeAllPanels();
 }
 function towerAt(corr, c, r) { const S = DB.CONFIG.towerSize; for (const t of corr.towers) if (c >= t.c && c < t.c + S && r >= t.r && r < t.r + S) return t; return null; }
