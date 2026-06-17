@@ -33,7 +33,7 @@ export function createRenderer(opts) {
   function worldGeom() { const W = cw(), H = ch(); return { cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.34 }; }
   function gatePositions(view) {
     const g = worldGeom();
-    const pts = DB.polygonPoints(view.player.corridorCount);
+    const pts = DB.polygonPoints(view.field.corridorCount);
     return pts.map((p) => ({ x: g.cx + p.x * g.R, y: g.cy + p.y * g.R }));
   }
   function fieldGeom(view) {
@@ -64,7 +64,7 @@ export function createRenderer(opts) {
     }
     const gates = gatePositions(view);
     const wg = worldGeom();
-    if (view.player.corridorCount > 1) {
+    if (view.field.corridorCount > 1) {
       ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 14; ctx.lineCap = "round";
       ctx.beginPath(); gates.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.stroke();
       for (let i = 0; i < gates.length; i++) drawArrow(gates[i], gates[(i + 1) % gates.length], view);
@@ -84,7 +84,7 @@ export function createRenderer(opts) {
   }
 
   function drawVortex(cx, cy, view) {
-    const active = view.player.phase === "prep", r = 46;
+    const active = view.field.phase === "prep", r = 46;
     const path = active ? "assets/world/vortex_active.PNG" : "assets/world/vortex_idle.PNG";
     const img = assets.get(path);
     if (img && (img.ready || (img.complete && img.naturalWidth > 0))) {
@@ -103,13 +103,13 @@ export function createRenderer(opts) {
       else {
         ctx.font = "bold 18px system-ui"; ctx.fillText("Wave", cx, cy - 8);
         ctx.font = "bold 20px system-ui";
-        ctx.fillText(view.state.mode === "endless" ? view.player.wave : (view.player.wave + "/" + view.player.totalWaves), cx, cy + 12);
+        ctx.fillText(view.state.mode === "endless" ? view.field.wave : (view.field.wave + "/" + view.field.totalWaves), cx, cy + 12);
       }
     }
   }
 
   function drawGate(p, i, view) {
-    const corr = view.player.corridors[i], el = DB.ELEMENTS[corr.element], r = 34;
+    const corr = view.field.corridors[i], el = DB.ELEMENTS[corr.element], r = 34;
     const inside = countEnemies(view, i, "corr"), origin = countEnemies(view, i, "origin");
     ctx.save();
     if (inside > 0) { ctx.shadowColor = el.color; ctx.shadowBlur = 18; }
@@ -135,7 +135,7 @@ export function createRenderer(opts) {
   function countEnemies(view, ci, kind) {
     let n = 0;
     for (const e of view.state.enemies) {
-      if (e.owner !== view.me) continue;
+      if (e.owner !== view.fieldId) continue;
       if (kind === "corr" && e.corridorIndex === ci) n++;
       else if (kind === "origin" && e.originIndex === ci) n++;
     }
@@ -144,7 +144,7 @@ export function createRenderer(opts) {
 
   // ---- FIELD ---------------------------------------------------------------
   function renderField(view, alpha) {
-    const corr = view.player.corridors[view.activeCorridor]; if (!corr) return;
+    const corr = view.field.corridors[view.activeCorridor]; if (!corr) return;
     const G = view.state.grid, el = DB.ELEMENTS[corr.element];
     const { ts, ox, oy } = fieldGeom(view);
     const W = cw(), H = ch();
@@ -181,12 +181,12 @@ export function createRenderer(opts) {
         } } }
     // enemies (interpolated)
     for (const e of view.state.enemies) {
-      if (e.owner !== view.me || e.corridorIndex !== corr.index) continue;
+      if (e.owner !== view.fieldId || e.corridorIndex !== corr.index) continue;
       drawEnemy(e, ts, ox, oy, view, alpha);
     }
     // projectiles
     for (const p of view.state.projectiles) {
-      if (p.owner !== view.me || p.corr.index !== corr.index) continue;
+      if (p.owner !== view.fieldId || p.corr.index !== corr.index) continue;
       const px = ox + TILE(p.x) * ts, py = oy + TILE(p.y) * ts, pr = Math.max(3, ts * 0.12);
       const asset = `assets/projectiles/${p.element}.PNG`;
       if (!assets.draw(asset, px - pr, py - pr, pr * 2, pr * 2)) { ctx.fillStyle = DB.ELEMENTS[p.element].color; ctx.beginPath(); ctx.arc(px, py, pr, 0, 7); ctx.fill(); }
@@ -260,7 +260,7 @@ export function createRenderer(opts) {
       ctx.strokeStyle = "#ffe066"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, 7); ctx.stroke();
     }
     // origin-element ring (shows which corridor the enemy came from)
-    const oid = view.player.elements[e.originIndex];
+    const oid = view.field.elements[e.originIndex];
     const oel = DB.ELEMENTS[oid];
     if (oel && !assets.draw(`assets/ui/origin-rings/${oid}.PNG`, x - r - 3, y - r - 3, (r + 3) * 2, (r + 3) * 2)) {
       ctx.strokeStyle = oel.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.stroke();
