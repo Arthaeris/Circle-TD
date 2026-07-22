@@ -30,7 +30,11 @@
     };
   }
 
+  // Early-call bonus: reward for starting the next wave while the previous is
+  // still being fought (plain data; the sim-core reads it via buildBalance).
+  if (!DB.CONFIG.earlyCallBonus) DB.CONFIG.earlyCallBonus = { base: 20, perWave: 6 };
+
   // §6.4 — content-gating version fields.
-  if (DB.codeVersion == null) DB.codeVersion = 2; // deterministic-core rebuild
+  if (DB.codeVersion == null) DB.codeVersion = 3; // v3: target modes, wave affixes, early-call bonus
   if (DB.contentHash === undefined) DB.contentHash = null; // filled by hashContent at boot
 })(typeof window !== "undefined" ? window : this);
