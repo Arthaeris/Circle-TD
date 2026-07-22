@@ -31,9 +31,12 @@ export function createRenderer(opts) {
 
   // ---- geometry helpers ----------------------------------------------------
   function worldGeom() { const W = cw(), H = ch(); return { cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.34 }; }
+  // versus: one gate per SEAT; otherwise one per corridor of the viewed field
+  function worldCount(view) { return view.versus ? view.state.players.length : view.field.corridorCount; }
+  function worldCorr(view, i) { return view.versus ? view.state.players[i].corridors[0] : view.field.corridors[i]; }
   function gatePositions(view) {
     const g = worldGeom();
-    const pts = DB.polygonPoints(view.field.corridorCount);
+    const pts = DB.polygonPoints(worldCount(view));
     return pts.map((p) => ({ x: g.cx + p.x * g.R, y: g.cy + p.y * g.R }));
   }
   function fieldGeom(view) {
@@ -64,7 +67,7 @@ export function createRenderer(opts) {
     }
     const gates = gatePositions(view);
     const wg = worldGeom();
-    if (view.field.corridorCount > 1) {
+    if (worldCount(view) > 1) {
       ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 14; ctx.lineCap = "round";
       ctx.beginPath(); gates.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.stroke();
       for (let i = 0; i < gates.length; i++) drawArrow(gates[i], gates[(i + 1) % gates.length], view);
@@ -84,7 +87,8 @@ export function createRenderer(opts) {
   }
 
   function drawVortex(cx, cy, view) {
-    const active = view.field.phase === "prep", r = 46;
+    const fld = view.versus ? view.state.players[view.me] : view.field; // versus: my seat's wave
+    const active = fld.phase === "prep", r = 46;
     const path = active ? "assets/world/vortex_active.PNG" : "assets/world/vortex_idle.PNG";
     const img = assets.get(path);
     if (img && (img.ready || (img.complete && img.naturalWidth > 0))) {
@@ -103,15 +107,17 @@ export function createRenderer(opts) {
       else {
         ctx.font = "bold 18px system-ui"; ctx.fillText("Wave", cx, cy - 8);
         ctx.font = "bold 20px system-ui";
-        ctx.fillText(view.state.mode === "endless" ? view.field.wave : (view.field.wave + "/" + view.field.totalWaves), cx, cy + 12);
+        ctx.fillText(view.state.mode === "endless" ? fld.wave : (fld.wave + "/" + fld.totalWaves), cx, cy + 12);
       }
     }
   }
 
   function drawGate(p, i, view) {
-    const corr = view.field.corridors[i], el = DB.ELEMENTS[corr.element], r = 34;
+    const corr = worldCorr(view, i), el = DB.ELEMENTS[corr.element], r = 34;
+    const seat = view.versus ? view.state.players[i] : null;
     const inside = countEnemies(view, i, "corr"), origin = countEnemies(view, i, "origin");
     ctx.save();
+    if (seat && !seat.alive) ctx.globalAlpha = 0.35; // eliminated seat
     if (inside > 0) { ctx.shadowColor = el.color; ctx.shadowBlur = 18; }
     const gateAsset = el.gateAsset || `assets/world/gates/${corr.element}.PNG`;
     const img = assets.get(gateAsset);
@@ -127,14 +133,23 @@ export function createRenderer(opts) {
       ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.stroke();
     }
     ctx.shadowBlur = 0;
-    ctx.font = "bold 16px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff"; ctx.fillText(inside, p.x, p.y + r + 14);
-    ctx.font = "12px system-ui"; ctx.fillStyle = "#cfe"; ctx.fillText(origin + "/" + corr.spawnedTotal, p.x, p.y + r + 30);
+    if (seat) {
+      // versus: seat name + lives + enemies inside
+      ctx.font = "bold 13px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = i === view.me ? "#ffd23d" : "#fff";
+      ctx.fillText(seat.alive ? (i === view.me ? "YOU" : "NPC " + i) : "☠", p.x, p.y + r + 14);
+      ctx.font = "12px system-ui"; ctx.fillStyle = "#cfe";
+      ctx.fillText(seat.alive ? ("❤" + seat.lives + "  👾" + inside) : "eliminated", p.x, p.y + r + 30);
+    } else {
+      ctx.font = "bold 16px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff"; ctx.fillText(inside, p.x, p.y + r + 14);
+      ctx.font = "12px system-ui"; ctx.fillStyle = "#cfe"; ctx.fillText(origin + "/" + corr.spawnedTotal, p.x, p.y + r + 30);
+    }
     ctx.restore();
   }
 
   function countEnemies(view, ci, kind) {
     let n = 0;
     for (const e of view.state.enemies) {
+      if (view.versus) { if (e.owner === ci) n++; continue; } // versus: seat = owner
       if (e.owner !== view.fieldId) continue;
       if (kind === "corr" && e.corridorIndex === ci) n++;
       else if (kind === "origin" && e.originIndex === ci) n++;
@@ -144,7 +159,9 @@ export function createRenderer(opts) {
 
   // ---- FIELD ---------------------------------------------------------------
   function renderField(view, alpha) {
-    const corr = view.field.corridors[view.activeCorridor]; if (!corr) return;
+    // versus: view.field is the viewed SEAT (one corridor); otherwise index in my field
+    const corr = view.versus ? view.field.corridors[0] : view.field.corridors[view.activeCorridor];
+    if (!corr) return;
     const G = view.state.grid, el = DB.ELEMENTS[corr.element];
     const { ts, ox, oy } = fieldGeom(view);
     const W = cw(), H = ch();
