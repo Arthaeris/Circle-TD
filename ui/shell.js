@@ -8,7 +8,7 @@
  * display only). In-game text is English (per request).
  * ===========================================================================*/
 import * as fx from "../sim/fx.js";
-import { generateWave } from "../sim/waves.js";
+import { generateWave, waveAffix, AFFIXES } from "../sim/waves.js";
 
 const $ = (id) => document.getElementById(id);
 const toI = (v) => fx.toInt(v);
@@ -36,7 +36,33 @@ export function createUI(opts) {
 
   function closeAllPanels() {
     ["build-menu", "tower-panel", "enemy-panel"].forEach((id) => { const e = $(id); if (e) e.classList.remove("show"); });
-    const v = getView(); v.selectedTowerId = null; v.selectedEnemyId = null; v.buildTile = null; v.buildMenuOpen = false;
+    const v = getView(); v.selectedTowerId = null; v.selectedEnemyId = null; v.buildTile = null; v.buildMenuOpen = false; v.buildPreview = null;
+  }
+
+  // ---- synergy helpers (display-only views over DB.SYNERGIES) ---------------
+  function synergyEffectText(syn) {
+    const parts = [];
+    if (syn.burst) parts.push(syn.burst + " burst dmg");
+    if (syn.dotMult) parts.push("×" + syn.dotMult + " poison dmg");
+    if (syn.curseBoost) parts.push("×" + syn.curseBoost + " curse dmg");
+    if (syn.execute) parts.push("executes below " + Math.round(syn.execute * 100) + "% HP");
+    if (syn.spread) parts.push("spreads statuses to nearby enemies");
+    if (syn.anchor) parts.push("anchors the tower onto the target");
+    return parts.join(", ");
+  }
+  // What a tower contributes to synergies: the status it APPLIES sets combos up
+  // (finished by other elements); its ELEMENT triggers combos on statuses.
+  function synergiesForTower(def) {
+    const setsUp = [], triggers = [];
+    if (def.status) for (const key in DB.SYNERGIES) {
+      const [st, el] = key.split("|");
+      if (st === def.status && el !== def.element) setsUp.push({ syn: DB.SYNERGIES[key], status: DB.STATUSES[st], el: DB.ELEMENTS[el] });
+    }
+    for (const key in DB.SYNERGIES) {
+      const [st, el] = key.split("|");
+      if (el === def.element && st !== def.status) triggers.push({ syn: DB.SYNERGIES[key], status: DB.STATUSES[st], el: DB.ELEMENTS[el] });
+    }
+    return { setsUp, triggers };
   }
 
   // ---- HUD -----------------------------------------------------------------
@@ -87,11 +113,14 @@ export function createUI(opts) {
       const isBoss = next % DB.CONFIG.bossEvery === 0;
       const agg = {};
       for (const g of generateWave(next, pl.corridorCount, DB.CONFIG.bossEvery)) agg[g.type] = (agg[g.type] || 0) + g.count;
+      const affix = waveAffix(v.state.seedBase, next, DB.CONFIG.bossEvery);
       const parts = Object.keys(agg).map((t) => {
         const d = DB.ENEMIES[t] || { name: t };
-        return `<span class="wprev-item${d.boss ? " boss" : ""}">${agg[t]}× ${d.name}</span>`;
+        const n = (affix && affix.countMult) ? Math.max(1, Math.round(agg[t] * affix.countMult)) : agg[t];
+        return `<span class="wprev-item${d.boss ? " boss" : ""}">${n}× ${d.name}</span>`;
       });
       html = `<span class="wprev-label${isBoss ? " boss" : ""}">${isBoss ? "⚠ Boss Wave " + next + ":" : "Next:"}</span> ${parts.join('<span class="wprev-sep">·</span>')}`;
+      if (affix) html += ` <span class="wprev-affix" title="${affix.desc}">${affix.icon} ${affix.name}</span>`;
     } else if (pl.phase === "prep") {
       html = `<span class="wprev-label boss">⚠ Final:</span> <span class="wprev-item boss">1× ${(DB.ENEMIES.endboss && DB.ENEMIES.endboss.name) || "End Boss"}</span>`;
     }
@@ -113,7 +142,17 @@ export function createUI(opts) {
     list.forEach((t) => {
       const b = document.createElement("button"); b.className = "build-card"; b.style.setProperty("--ec", el.color);
       if (cur < t.cost) b.classList.add("cant");
-      b.innerHTML = `<div class="bc-name">${t.name}</div><div class="bc-arch">${t.archetype}</div><div class="bc-stats">⚔ ${t.damage} · ◎ ${t.range.toFixed(1)} · ⚡ ${t.fireRate}</div>${t.status ? `<div class="bc-eff">${DB.STATUSES[t.status].icon} ${DB.STATUSES[t.status].name}</div>` : ""}<div class="bc-cost">${t.cost}</div>`;
+      const dps = (t.archetype === "support") ? 0 : Math.round(t.damage * t.fireRate);
+      const combos = synergiesForTower(t).setsUp;
+      b.innerHTML = `<div class="bc-name">${t.name}</div><div class="bc-arch">${t.archetype}</div>`
+        + `<div class="bc-stats">⚔ ${t.damage} · ◎ ${t.range.toFixed(1)} · ⚡ ${t.fireRate}${dps ? ` · <b>${dps} DPS</b>` : ""}</div>`
+        + (t.status ? `<div class="bc-eff">${DB.STATUSES[t.status].icon} ${DB.STATUSES[t.status].name}</div>` : "")
+        + (combos.length ? `<div class="bc-syn">⚗ Combos: ${combos.map((s) => s.el.icon).join(" ")}</div>` : "")
+        + `<div class="bc-cost">${t.cost}</div>`;
+      // browsing a card previews its range at the build spot (see render/draw.js)
+      const preview = () => { v.buildPreview = { range: t.range }; };
+      b.addEventListener("pointerenter", preview);
+      b.addEventListener("pointerdown", preview);
       b.onclick = () => { cmd.build(corr.index, tile.c, tile.r, t.id); closeAllPanels(); };
       grid.appendChild(b);
     });
@@ -144,8 +183,12 @@ export function createUI(opts) {
         ${statRow("Damage", cur.dmg.toFixed(0), nxt && nxt.dmg.toFixed(0))}
         ${statRow("Range", cur.range.toFixed(1), nxt && nxt.range.toFixed(1))}
         ${statRow("Atk Speed", cur.rate.toFixed(2), nxt && nxt.rate.toFixed(2))}
+        ${def.archetype !== "support" ? statRow("DPS", Math.round(cur.dmg * cur.rate), nxt && Math.round(nxt.dmg * nxt.rate)) : ""}
         ${def.status ? `<div class="tp-eff">${DB.STATUSES[def.status].icon} Applies ${DB.STATUSES[def.status].name}</div>` : ""}
       </div>
+      <div class="tp-target"><span class="tt-lbl">Target</span>${["first", "last", "strong", "weak"].map((m) =>
+        `<button class="tm-btn ${(tw.targetMode || "first") === m ? "sel" : ""}" data-tm="${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</div>
+      ${towerSynergyHtml(def)}
       <div class="tp-actions">
         <button id="tp-upgrade" class="${maxed ? "disabled" : ""}">${maxed ? "MAX LEVEL" : "Upgrade · " + cost}</button>
         <button id="tp-sell" class="sell">Sell · +${refund}</button>
@@ -160,7 +203,17 @@ export function createUI(opts) {
     $("tp-upgrade").onclick = () => { if (!maxed) cmd.upgrade(corr.index, tw.id); };
     $("tp-sell").onclick = () => { cmd.sell(corr.index, tw.id); closeAllPanels(); };
     p.querySelectorAll("[data-mut]").forEach((b) => b.onclick = () => cmd.mutate(corr.index, tw.id, b.dataset.mut));
-    _twSig = tw.level + "/" + tw.expert + "/" + tw.kills + "/" + tw.mutations.length;
+    p.querySelectorAll("[data-tm]").forEach((b) => b.onclick = () => cmd.setTarget(corr.index, tw.id, b.dataset.tm));
+    _twSig = tw.level + "/" + tw.expert + "/" + tw.kills + "/" + tw.mutations.length + "/" + (tw.targetMode || "first");
+  }
+  // compact synergy block for the tower panel
+  function towerSynergyHtml(def) {
+    const { setsUp, triggers } = synergiesForTower(def);
+    if (!setsUp.length && !triggers.length) return "";
+    let h = `<div class="tp-syn"><div class="tp-syn-head">⚗ Synergies</div>`;
+    for (const s of setsUp) h += `<div class="tp-syn-row">${s.status.icon}+${s.el.icon} <b style="color:${s.syn.color}">${s.syn.name}</b> — hit ${s.status.name} enemies with ${s.el.name}: ${synergyEffectText(s.syn)}</div>`;
+    for (const s of triggers) h += `<div class="tp-syn-row">${s.status.icon}+${s.el.icon} <b style="color:${s.syn.color}">${s.syn.name}</b> — this tower triggers it on ${s.status.name} enemies: ${synergyEffectText(s.syn)}</div>`;
+    return h + `</div>`;
   }
   function statRow(label, val, next) { return `<div class="stat-row"><span>${label}</span><span>${val}${(next != null && String(next) !== String(val)) ? ` <em>\u2192 ${next}</em>` : ""}</span></div>`; }
   // display-only sell value (mirrors core totalInvested * sellRefund)
@@ -180,18 +233,33 @@ export function createUI(opts) {
   }
 
   // ---- enemy panel ---------------------------------------------------------
+  const ADAPT_INFO = {
+    speed:    { icon: "💨", name: "Swift" },
+    health:   { icon: "🩸", name: "Vital" },
+    armor:    { icon: "🛡️", name: "Armored" },
+    resist:   { icon: "🔰", name: "Resistant" },
+    momentum: { icon: "🌀", name: "Momentum" },
+    hardened: { icon: "🪨", name: "Hardened" },
+  };
   function openEnemyPanel(e) {
     closeAllPanels();
     const v = getView(); v.selectedEnemyId = e.id;
     const oel = DB.ELEMENTS[v.player.elements[e.originIndex]];
     const stk = (e.statusKeys || []).map((k) => DB.STATUSES[k]).filter(Boolean);
+    const affix = e.affix && AFFIXES[e.affix];
+    // adaptations gained from completed loops (recorded by the sim)
+    const adapts = Object.keys(e.adapt || {}).map((k) => {
+      const a = ADAPT_INFO[k] || { icon: "↻", name: k }; const n = e.adapt[k];
+      return `<span class="stag" style="--sc:#ffd23d">${a.icon} ${a.name}${n > 1 ? " ×" + n : ""}</span>`;
+    });
     const p = $("enemy-panel");
     p.innerHTML = `<button class="panel-close" id="ep-close">✕</button>
-      <div class="ep-head">${e.boss ? "☠ " : ""}${e.def.id}${e.end ? " (END BOSS)" : ""}${e.sent ? " · SENT" : ""}</div>
+      <div class="ep-head">${e.boss ? "☠ " : ""}${e.def.id}${e.end ? " (END BOSS)" : ""}${e.sent ? " · SENT" : ""}${affix ? ` · ${affix.icon} ${affix.name.toUpperCase()}` : ""}</div>
       <div class="exp-bar big"><div style="width:${Math.min(1, Math.max(0, e.hp) / e.maxHp) * 100}%;background:#ff4d6d"></div></div>
       <div class="exp-label">${Math.max(0, toI(e.hp))} / ${toI(e.maxHp)} HP</div>
       <div class="tp-stats">${statRow("Origin", oel.icon + " " + oel.name)}${statRow("Loops", e.loopCount)}${statRow("Armor", toI(e.armor))}${statRow("Reward", e.reward)}</div>
-      <div class="ep-status">${stk.length ? stk.map((s) => `<span class="stag" style="--sc:${s.color}">${s.icon} ${s.name}</span>`).join("") : "<span class='dim'>No status</span>"}</div>`;
+      <div class="ep-status">${stk.length ? stk.map((s) => `<span class="stag" style="--sc:${s.color}">${s.icon} ${s.name}</span>`).join("") : "<span class='dim'>No status</span>"}</div>
+      ${adapts.length ? `<div class="ep-adapt-head">↻ Loop adaptations</div><div class="ep-status">${adapts.join("")}</div>` : ""}`;
     p.classList.add("show");
     $("ep-close").onclick = closeAllPanels;
   }
@@ -203,12 +271,31 @@ export function createUI(opts) {
       let found = null, fcorr = null;
       for (const c of v.field.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
       if (!found) { closeAllPanels(); _twSig = null; return; }
-      const sig = found.level + "/" + found.expert + "/" + found.kills + "/" + found.mutations.length;
+      const sig = found.level + "/" + found.expert + "/" + found.kills + "/" + found.mutations.length + "/" + (found.targetMode || "first");
       if (sig !== _twSig) openTowerPanel(fcorr, found); // rebuild only when it actually changed -> buttons stay clickable
     } else if (v.selectedEnemyId) {
       const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.fieldId);
       if (e && e.alive) openEnemyPanel(e); else closeAllPanels();
     }
+    updateBossBar();
+  }
+
+  // ---- boss HP bar (top of the game stage while a boss is alive) ------------
+  function updateBossBar() {
+    const bb = $("boss-bar"); if (!bb) return;
+    const v = getView();
+    if (!v.state || v.screen !== "game") { bb.classList.remove("show"); return; }
+    let boss = null;
+    for (const e of v.state.enemies) {
+      if (!e.alive || e.owner !== v.fieldId || !e.boss) continue;
+      if (!boss || (e.end && !boss.end) || (e.end === boss.end && e.maxHp > boss.maxHp)) boss = e;
+    }
+    if (!boss) { bb.classList.remove("show"); return; }
+    const name = (DB.ENEMIES[boss.type] || {}).name || boss.type;
+    setText("boss-name", "☠ " + name + (boss.loopCount ? "  ↻" + boss.loopCount : ""));
+    const f = $("boss-fill"); if (f) f.style.width = (Math.max(0, Math.min(1, (boss.hp / boss.maxHp))) * 100) + "%";
+    bb.classList.toggle("end", !!boss.end);
+    bb.classList.add("show");
   }
 
   // ---- setup screen --------------------------------------------------------
@@ -232,15 +319,21 @@ export function createUI(opts) {
       standard: "Enemies carry one status effect at a time — a new one replaces the old.",
       advanced: "Status effects from different towers stack and combine; enemies lock their statuses after each full loop.",
     },
+    pacing: {
+      manual: "Take your time between waves. You can still toggle ⟳ Auto in-game, and calling a wave early while enemies remain pays a gold bonus.",
+      auto: "The next wave starts automatically 5 seconds after the last one is cleared. The final End Boss always waits for you.",
+    },
   };
   function updateSetupDescs(setup) {
     setText("desc-mode", SETUP_DESCS.mode[setup.mode] || "");
     setText("desc-gamemode", SETUP_DESCS.gamemode[setup.gameMode] || "");
     setText("desc-econ", SETUP_DESCS.econ[setup.economy] || "");
     setText("desc-status", SETUP_DESCS.status[setup.status] || "");
+    setText("desc-pacing", SETUP_DESCS.pacing[setup.pacing] || "");
   }
   function renderSetup(setup, availElements) {
     updateSetupDescs(setup);
+    document.querySelectorAll("[data-pacing]").forEach((b) => b.classList.toggle("sel", b.dataset.pacing === setup.pacing));
     document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("sel", b.dataset.mode === setup.mode));
     const cc = $("corridor-buttons");
     if (cc && !cc.dataset.built) {
@@ -311,6 +404,20 @@ export function createUI(opts) {
         <div class="mc-wins">Wins with element: ${wins}</div></div>`;
     });
     html += `</div>`;
+    // ---- Synergy Codex: cross-element combos, discoverable in one place ----
+    html += `<h2 class="codex-head">⚗ Synergy Codex</h2>
+      <p class="dim codex-note">Hit an enemy carrying a status with a tower of the listed element to trigger the combo.</p>
+      <div class="codex-list">`;
+    for (const key in DB.SYNERGIES) {
+      const [st, el] = key.split("|");
+      const s = DB.STATUSES[st], E = DB.ELEMENTS[el], syn = DB.SYNERGIES[key];
+      if (!s || !E) continue;
+      html += `<div class="codex-row">
+        <span class="cx-combo">${s.icon} ${s.name} <span class="dim">+</span> ${E.icon} ${E.name}</span>
+        <span class="cx-name" style="color:${syn.color}">${syn.name}</span>
+        <span class="cx-eff">${synergyEffectText(syn)}</span></div>`;
+    }
+    html += `</div>`;
     m.innerHTML = html; m.classList.add("show");
     $("ms-close").onclick = () => m.classList.remove("show");
   }
@@ -338,7 +445,7 @@ export function createUI(opts) {
     if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
+  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
 }
 
 export default { createUI };
