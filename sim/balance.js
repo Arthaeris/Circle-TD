@@ -55,6 +55,8 @@ export function buildBalance(DB) {
     enemies: {},
     // Competitive send-economy (§8); tolerate older DBs lacking it.
     competitive: normalizeCompetitive(DB.COMPETITIVE),
+    // Sendable-mob catalog (flat per-level costs; competitive + versus).
+    sends: normalizeSends(DB),
   };
 
   for (const id of DB.ELEMENT_ORDER) {
@@ -134,14 +136,31 @@ function convertMods(mods) {
 function normalizeCompetitive(C) {
   C = C || {};
   return {
-    sendBaseCost: C.sendBaseCost != null ? C.sendBaseCost : 40,
-    sendCostGrowth: fromFloat(C.sendCostGrowth != null ? C.sendCostGrowth : 1.15), // §8.3 rising send cost
-    incomePerSend: C.incomePerSend != null ? C.incomePerSend : 2,                  // §8.1 builds passive income
+    incomeRate: C.incomeRate != null ? C.incomeRate : 0.06,                        // §8.1 income per gold sent
     incomeIntervalTicks: C.incomeIntervalTicks != null ? C.incomeIntervalTicks : 150, // 5s @30hz
     sentBountyMult: fromFloat(C.sentBountyMult != null ? C.sentBountyMult : 1.6),  // §8.2 FIXED higher bounty (not rising)
-    maxActiveSentPerTarget: C.maxActiveSentPerTarget != null ? C.maxActiveSentPerTarget : 30, // §8.3 cap
+    maxActiveSentPerTarget: C.maxActiveSentPerTarget != null ? C.maxActiveSentPerTarget : 40, // §8.3 cap
     catchupPerLifeBehind: C.catchupPerLifeBehind != null ? C.catchupPerLifeBehind : 1, // §8.3 catch-up income
   };
+}
+
+// Bake the authored send catalog into per-level integer/fixed tables.
+// cost[l] / upgradeCost[l] are ints; hpMult[l] / rewardMult[l] are fixed.
+function normalizeSends(DB) {
+  const S = DB.SENDS || {};
+  const MAX = DB.SEND_MAX_LEVEL || 5;
+  const out = {};
+  for (const type in S) {
+    const cost = [], upgradeCost = [], hpMult = [], rewardMult = [];
+    for (let l = 1; l <= MAX; l++) {
+      cost.push(DB.sendCost(type, l));
+      hpMult.push(fromFloat(DB.sendHpMult(type, l)));
+      rewardMult.push(fromFloat(1 + 0.5 * (l - 1)));   // defender bounty grows with level
+      if (l < MAX) upgradeCost.push(DB.sendUpgradeCost(type, l));
+    }
+    out[type] = { count: S[type].count || 1, cost, upgradeCost, hpMult, rewardMult, maxLevel: MAX };
+  }
+  return out;
 }
 
 export default { buildBalance };
