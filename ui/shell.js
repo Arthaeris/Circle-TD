@@ -20,6 +20,7 @@ export function createUI(opts) {
   const masteryLevel = opts.masteryLevel || (() => 5);
   const getMeta = opts.getMeta || (() => ({ mastery: {}, elementWins: {} }));
   let _twSig = null; // tower-panel content signature (avoid rebuilding every refresh)
+  let _sendSig = null; // send-panel content signature
 
   // Stacked toast queue: consecutive messages no longer overwrite each other.
   // #toast is a container; each message is a child that fades out on its own.
@@ -35,8 +36,9 @@ export function createUI(opts) {
   function setText(id, t) { const e = $(id); if (e) e.textContent = t; }
 
   function closeAllPanels() {
-    ["build-menu", "tower-panel", "enemy-panel"].forEach((id) => { const e = $(id); if (e) e.classList.remove("show"); });
+    ["build-menu", "tower-panel", "enemy-panel", "send-panel"].forEach((id) => { const e = $(id); if (e) e.classList.remove("show"); });
     const v = getView(); v.selectedTowerId = null; v.selectedEnemyId = null; v.buildTile = null; v.buildMenuOpen = false; v.buildPreview = null;
+    _sendSig = null;
   }
 
   // ---- synergy helpers (display-only views over DB.SYNERGIES) ---------------
@@ -79,13 +81,29 @@ export function createUI(opts) {
 
   function updateEnemyOverview() {
     const ov = $("enemy-overview"); if (!ov) return;
-    const v = getView(), fld = v.field;
-    let html = `<div class="ov-head">Survivors by Origin</div>`;
-    for (let i = 0; i < fld.corridorCount; i++) {
-      const el = DB.ELEMENTS[fld.elements[i]];
-      let alive = 0; for (const e of v.state.enemies) if (e.owner === v.fieldId && e.originIndex === i) alive++;
-      const total = fld.corridors[i].spawnedTotal, pct = total ? alive / total : 0;
-      html += `<div class="ov-row" data-ci="${i}"><span class="ov-el" style="color:${el.color}">${el.icon} ${el.name}</span><span class="ov-num">${alive}/${total}</span><div class="ov-bar"><div style="width:${pct * 100}%;background:${el.color}"></div></div></div>`;
+    const v = getView();
+    let html;
+    if (v.versus) {
+      // one row per SEAT: name, element, lives, enemies currently in the corridor
+      html = `<div class="ov-head">Corridors · sends travel →</div>`;
+      v.state.players.forEach((p, i) => {
+        const el = DB.ELEMENTS[p.elements[0]];
+        let inside = 0; for (const e of v.state.enemies) if (e.owner === i) inside++;
+        const name = i === v.me ? "You" : "NPC " + i;
+        html += `<div class="ov-row ${p.alive ? "" : "dead"}" data-ci="${i}">
+          <span class="ov-el" style="color:${el.color}">${el.icon} ${name}</span>
+          <span class="ov-num">${p.alive ? "❤" + p.lives + " · 👾" + inside : "☠ out"}</span>
+          <div class="ov-bar"><div style="width:${Math.min(100, (p.lives / p.maxLives) * 100)}%;background:${p.alive ? el.color : "#555"}"></div></div></div>`;
+      });
+    } else {
+      const fld = v.field;
+      html = `<div class="ov-head">Survivors by Origin</div>`;
+      for (let i = 0; i < fld.corridorCount; i++) {
+        const el = DB.ELEMENTS[fld.elements[i]];
+        let alive = 0; for (const e of v.state.enemies) if (e.owner === v.fieldId && e.originIndex === i) alive++;
+        const total = fld.corridors[i].spawnedTotal, pct = total ? alive / total : 0;
+        html += `<div class="ov-row" data-ci="${i}"><span class="ov-el" style="color:${el.color}">${el.icon} ${el.name}</span><span class="ov-num">${alive}/${total}</span><div class="ov-bar"><div style="width:${pct * 100}%;background:${el.color}"></div></div></div>`;
+      }
     }
     ov.innerHTML = html;
     ov.querySelectorAll(".ov-row").forEach((r) => r.onclick = () => opts.enterCorridor(+r.dataset.ci));
@@ -264,6 +282,56 @@ export function createUI(opts) {
     $("ep-close").onclick = closeAllPanels;
   }
 
+  // ---- send panel (competitive + versus): flat costs, 5 upgrade levels ------
+  function toggleSendPanel() {
+    const p = $("send-panel"); if (!p) return;
+    if (p.classList.contains("show")) { closeAllPanels(); return; }
+    closeAllPanels();
+    p.classList.add("show");
+    renderSendPanel(true);
+  }
+  function sendPanelSig(pl) {
+    let sig = "";
+    for (const t in DB.SENDS) {
+      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
+      sig += t + lvl + (pl.gold >= DB.sendCost(t, lvl) ? "y" : "n") + (lvl < DB.SEND_MAX_LEVEL && pl.gold >= DB.sendUpgradeCost(t, lvl) ? "Y" : "N");
+    }
+    return sig + "|" + Math.floor((getView().player.income || 0));
+  }
+  function renderSendPanel(force) {
+    const p = $("send-panel"); if (!p || !p.classList.contains("show")) return;
+    const v = getView(), pl = v.player;
+    const sig = sendPanelSig(pl);
+    if (!force && sig === _sendSig) return;
+    _sendSig = sig;
+    let html = `<button class="panel-close" id="sp-close">✕</button>
+      <div class="panel-head">⚔ Send Mobs <span class="cur">💰 Income +${pl.income || 0}/5s</span></div>
+      <p class="sp-note">${v.versus ? "Sends march into the NEXT corridor. Leaked mobs cost a life and travel on." : "Sends spawn on your opponent's field."} Flat cost per level — upgrade a type to make it stronger (and pricier).</p>
+      <div class="sp-rows">`;
+    for (const t in DB.SENDS) {
+      const s = DB.SENDS[t], en = DB.ENEMIES[t] || { name: t };
+      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
+      const cost = DB.sendCost(t, lvl);
+      const hp = Math.round(en.hp * DB.sendHpMult(t, lvl));
+      const maxed = lvl >= DB.SEND_MAX_LEVEL;
+      const upCost = maxed ? 0 : DB.sendUpgradeCost(t, lvl);
+      html += `<div class="sp-row">
+        <div class="sp-info">
+          <div class="sp-name">${en.name}${s.count > 1 ? ` <span class="sp-count">×${s.count}</span>` : ""}
+            <span class="sp-pips">${[1, 2, 3, 4, 5].map((i) => `<b class="${i <= lvl ? "on" : ""}"></b>`).join("")}</span></div>
+          <div class="sp-desc">${s.desc} · ♥ ${hp}${en.armor ? " · 🛡 " + en.armor : ""}${en.speed >= 1.5 ? " · 💨" : ""}</div>
+        </div>
+        <button class="sp-send ${pl.gold < cost ? "cant" : ""}" data-send="${t}">Send · ${cost}</button>
+        <button class="sp-up ${maxed ? "maxed" : (pl.gold < upCost ? "cant" : "")}" data-up="${t}">${maxed ? "MAX" : "⬆ Lv" + (lvl + 1) + " · " + upCost}</button>
+      </div>`;
+    }
+    html += `</div>`;
+    p.innerHTML = html;
+    $("sp-close").onclick = closeAllPanels;
+    p.querySelectorAll("[data-send]").forEach((b) => b.onclick = () => cmd.sendAuto(b.dataset.send));
+    p.querySelectorAll("[data-up]").forEach((b) => b.onclick = () => cmd.upgradeSend(b.dataset.up));
+  }
+
   // ---- live panel refresh (tower stats / enemy hp+status update in place) ----
   function refreshPanels() {
     const v = getView(); if (!v.state) return;
@@ -277,6 +345,7 @@ export function createUI(opts) {
       const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.fieldId);
       if (e && e.alive) openEnemyPanel(e); else closeAllPanels();
     }
+    renderSendPanel(false);
     updateBossBar();
   }
 
@@ -308,6 +377,7 @@ export function createUI(opts) {
     },
     gamemode: {
       solo: "Play alone on your own battlefield.",
+      versus: "Offline battle royale: you own ONE corridor in a ring of 3–8. NPC rivals hold the rest. Leaked mobs cost a life and march into the next corridor. Send mobs to bury your neighbor. Last one standing wins.",
       coop: "Defend one shared battlefield and life pool together. Requires a multiplayer room.",
       competitive: "Separate battlefields — spend resources to send extra enemies at your rival. Requires a multiplayer room.",
     },
@@ -332,25 +402,28 @@ export function createUI(opts) {
     setText("desc-pacing", SETUP_DESCS.pacing[setup.pacing] || "");
   }
   function renderSetup(setup, availElements) {
+    const vs = setup.gameMode === "versus";
+    if (vs && setup.corridors < 3) setup.corridors = 4;
     updateSetupDescs(setup);
     document.querySelectorAll("[data-pacing]").forEach((b) => b.classList.toggle("sel", b.dataset.pacing === setup.pacing));
-    document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("sel", b.dataset.mode === setup.mode));
+    // versus forces endless waves + shared gold: grey out the irrelevant chips
+    document.querySelectorAll("[data-mode]").forEach((b) => { b.classList.toggle("sel", !vs && b.dataset.mode === setup.mode); b.classList.toggle("disabled", vs); });
     const cc = $("corridor-buttons");
     if (cc && !cc.dataset.built) {
-      cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { if (setup.mode === "single") return; setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
+      cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { if (setup.mode === "single" && setup.gameMode !== "versus") return; if (setup.gameMode === "versus" && n < 3) return; setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
     }
-    if (cc) cc.querySelectorAll(".chip").forEach((b) => { b.classList.toggle("sel", +b.dataset.cn === setup.corridors); b.classList.toggle("disabled", setup.mode === "single"); });
-    const shape = $("shape-name"); if (shape) shape.textContent = DB.SHAPE_NAMES[setup.corridors] || "";
-    if (setup.mode === "single") setup.corridors = 1;
-    document.querySelectorAll("[data-econ]").forEach((b) => b.classList.toggle("sel", b.dataset.econ === setup.economy));
+    if (cc) cc.querySelectorAll(".chip").forEach((b) => { b.classList.toggle("sel", +b.dataset.cn === setup.corridors); b.classList.toggle("disabled", (setup.mode === "single" && !vs) || (vs && +b.dataset.cn < 3)); });
+    const shape = $("shape-name"); if (shape) shape.textContent = vs ? ("You + " + (setup.corridors - 1) + " NPCs") : (DB.SHAPE_NAMES[setup.corridors] || "");
+    if (setup.mode === "single" && !vs) setup.corridors = 1;
+    document.querySelectorAll("[data-econ]").forEach((b) => { b.classList.toggle("sel", vs ? b.dataset.econ === "shared" : b.dataset.econ === setup.economy); b.classList.toggle("disabled", vs); });
     document.querySelectorAll("[data-status]").forEach((b) => b.classList.toggle("sel", b.dataset.status === setup.status));
     const wrap = $("element-assign");
     if (wrap) {
-      wrap.innerHTML = ""; const n = setup.mode === "single" ? 1 : setup.corridors;
+      wrap.innerHTML = ""; const n = vs ? 1 : (setup.mode === "single" ? 1 : setup.corridors);
       for (let i = 0; i < n; i++) {
         if (!availElements.includes(setup.elements[i])) setup.elements[i] = availElements[i % availElements.length];
         const row = document.createElement("div"); row.className = "assign-row";
-        const lbl = document.createElement("div"); lbl.className = "assign-lbl"; lbl.textContent = "Corridor " + (i + 1); row.appendChild(lbl);
+        const lbl = document.createElement("div"); lbl.className = "assign-lbl"; lbl.textContent = vs ? "Your Element (NPCs get the rest at random)" : "Corridor " + (i + 1); row.appendChild(lbl);
         const optsEl = document.createElement("div"); optsEl.className = "assign-opts";
         availElements.forEach((eid) => { const el = DB.ELEMENTS[eid]; const b = document.createElement("button"); b.className = "elbtn"; b.style.setProperty("--ec", el.color); b.innerHTML = `<span>${el.icon}</span>${el.name}`; b.classList.toggle("sel", setup.elements[i] === eid); b.onclick = () => { setup.elements[i] = eid; renderSetup(setup, availElements); }; optsEl.appendChild(b); });
         row.appendChild(optsEl); wrap.appendChild(row);
@@ -365,7 +438,7 @@ export function createUI(opts) {
     const x = c.getContext("2d");
     const W = c.width = c.clientWidth * 2, H = c.height = c.clientHeight * 2;
     x.clearRect(0, 0, W, H);
-    const n = setup.mode === "single" ? 1 : setup.corridors;
+    const n = setup.gameMode === "versus" ? setup.corridors : (setup.mode === "single" ? 1 : setup.corridors);
     const pts = DB.polygonPoints(n);
     const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.36;
     x.lineWidth = 4; x.strokeStyle = "rgba(255,255,255,.25)";
@@ -374,8 +447,15 @@ export function createUI(opts) {
       pts.forEach((p, i) => { const px = cx + p.x * R, py = cy + p.y * R; i ? x.lineTo(px, py) : x.moveTo(px, py); });
       x.closePath(); x.stroke();
     }
+    const vs = setup.gameMode === "versus";
     pts.forEach((p, i) => {
       const px = cx + p.x * R, py = cy + p.y * R;
+      if (vs && i > 0) { // NPC seats: element unknown until the match starts
+        x.beginPath(); x.arc(px, py, 22, 0, 7); x.fillStyle = "rgba(255,255,255,.15)"; x.fill();
+        x.fillStyle = "rgba(255,255,255,.6)"; x.font = "bold 22px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+        x.fillText("?", px, py + 1);
+        return;
+      }
       const el = DB.ELEMENTS[setup.elements[i]] || DB.ELEMENTS.fire;
       x.beginPath(); x.arc(px, py, 22, 0, 7); x.fillStyle = el.color; x.fill();
       x.fillStyle = "#0d0f1a"; x.font = "26px serif"; x.textAlign = "center"; x.textBaseline = "middle";
@@ -445,7 +525,7 @@ export function createUI(opts) {
     if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
+  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, toggleSendPanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
 }
 
 export default { createUI };
