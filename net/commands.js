@@ -9,7 +9,7 @@
 
 export const CommandTypes = [
   "BuildTower", "SellTower", "UpgradeTower", "MutateTower",
-  "StartWave", "SendEnemy", "SetSpeed", "Ack", "SetTargetMode",
+  "StartWave", "SendEnemy", "SetSpeed", "Ack", "SetTargetMode", "UpgradeSend",
 ];
 
 // Factory helpers (the shell builds these from local input, never mutating state).
@@ -31,6 +31,9 @@ export function setSpeed(player, speed) { return { type: "SetSpeed", player, spe
 export function ack(player) { return { type: "Ack", player }; }
 export function setTargetMode(player, corridorId, towerId, mode) {
   return { type: "SetTargetMode", player, corridorId, towerId, mode };
+}
+export function upgradeSend(player, enemyType) {
+  return { type: "UpgradeSend", player, enemyType };
 }
 
 // Deterministic ordering of a tick's commands. `seq` is a monotonically
@@ -73,5 +76,5 @@ export function deserialize(arr) {
 
 export default {
   CommandTypes, buildTower, sellTower, upgradeTower, mutateTower,
-  startWave, sendEnemy, setSpeed, ack, setTargetMode, orderCommands, serialize, deserialize,
+  startWave, sendEnemy, setSpeed, ack, setTargetMode, upgradeSend, orderCommands, serialize, deserialize,
 };
