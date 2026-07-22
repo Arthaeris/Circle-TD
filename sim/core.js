@@ -21,7 +21,7 @@
 import * as fx from "./fx.js";
 import * as rng from "./rng.js";
 import * as pf from "./pathfind.js";
-import { generateWave, enemyScale, totalWaves } from "./waves.js";
+import { generateWave, enemyScale, totalWaves, waveAffix } from "./waves.js";
 
 const F = fx.fromFloat;
 const HALF = fx.HALF;                  // 0.5 in fixed
@@ -183,6 +183,7 @@ function applyCommand(state, cmd) {
     case "MutateTower":  cmdMutate(state, pl, cmd); break;
     case "StartWave":    cmdStartWave(state, pl, cmd); break;
     case "SendEnemy":    cmdSendEnemy(state, pl, cmd); break;
+    case "SetTargetMode": cmdSetTargetMode(state, pl, cmd); break;
     case "SetSpeed":     if (cmd.player === 0) { const sp = cmd.speed | 0; state.netSpeed = sp < 1 ? 1 : (sp > 3 ? 3 : sp); } break;
     case "Ack":          break; // heartbeat, no state change
   }
@@ -258,27 +259,47 @@ function cmdMutate(state, pl, cmd) {
   tw.mutations.push(cmd.mutId);
 }
 
+// Per-tower targeting priority (display-independent, deterministic).
+const TARGET_MODES = ["first", "last", "strong", "weak"];
+function cmdSetTargetMode(state, pl, cmd) {
+  const corr = fieldOwner(state, pl).corridors[cmd.corridorId]; if (!corr) return;
+  const tw = corr.towers.find(t => t.id === cmd.towerId); if (!tw) return;
+  if (!TARGET_MODES.includes(cmd.mode)) return;
+  tw.targetMode = cmd.mode;
+}
+
 function cmdStartWave(state, pl, cmd) {
   const fp = fieldOwner(state, pl); // co-op: the single shared field
   if (fp.phase === "prep") { summonEndBoss(state, fp); return; }
   if (fp.phase === "victory" || fp.phase === "defeat" || fp.phase === "endboss") return;
   if (state.mode !== "endless" && fp.wave >= fp.totalWaves) return;
+  // Early-call bonus: calling the next wave while the previous one is still
+  // being fought pays out immediately (risk/reward for skilled play).
+  if (fp.phase === "wave") {
+    const ec = state.bal.earlyCall;
+    const eb = ec.base + (fp.wave + 1) * ec.perWave;
+    if (state.gameMode === "coop") { for (const p of state.players) grantAll(state, p, eb); }
+    else grantAll(state, fp, eb);
+    state.events.push({ kind: "earlyBonus", player: fp.id, bonus: eb });
+  }
   fp.wave++;
+  const affix = waveAffix(state.seedBase, fp.wave, state.bal.bossEvery);
   const entries = generateWave(fp.wave, fp.corridorCount, state.bal.bossEvery);
   let originRot = 0;
   for (const group of entries) {
-    for (let k = 0; k < group.count; k++) {
+    const count = (affix && affix.countMult) ? Math.max(1, Math.round(group.count * affix.countMult)) : group.count;
+    for (let k = 0; k < count; k++) {
       const origin = group.type === "boss"
         ? rng.nextInt(state.seedSim, fp.corridorCount)
         : (originRot++ % fp.corridorCount);
       const atTick = state.tick + fx.toInt(fx.mul(group.delay + fx.mul(fx.fromInt(k), group.gap), fx.fromInt(SIM_HZ)));
-      fp.spawnQueue.push({ type: group.type, origin, atTick, sent: false });
+      fp.spawnQueue.push({ type: group.type, origin, atTick, sent: false, wave: fp.wave });
       fp.corridors[origin].spawnedTotal++;
     }
   }
   fp.waveActive = true;
   fp.phase = "wave";
-  state.events.push({ kind: "wave", player: fp.id, wave: fp.wave, boss: (fp.wave % state.bal.bossEvery === 0) });
+  state.events.push({ kind: "wave", player: fp.id, wave: fp.wave, boss: (fp.wave % state.bal.bossEvery === 0), affix: affix ? affix.id : null });
 }
 
 // Competitive: spend gold to spawn extra enemies on a target, builds income (§8).
@@ -389,7 +410,9 @@ function updateSpawns(state) {
     if (!pl.spawnQueue.length) continue;
     const remaining = [];
     for (const s of pl.spawnQueue) {
-      if (state.tick >= s.atTick) spawnEnemy(state, pl, s.type, s.origin, pl.wave, false);
+      // spawn with the wave the enemy was queued FOR (matters when waves
+      // overlap via early calls), falling back to the field's current wave
+      if (state.tick >= s.atTick) spawnEnemy(state, pl, s.type, s.origin, s.wave || pl.wave, false);
       else remaining.push(s);
     }
     pl.spawnQueue = remaining;
@@ -400,20 +423,29 @@ function spawnEnemy(state, pl, type, origin, wave, sent) {
   const def = state.bal.enemies[type]; if (!def) return;
   const sc = enemyScale(Math.max(1, wave));
   const corr = pl.corridors[origin];
-  const maxHp = fx.mul(def.hp, sc.hp);
+  let maxHp = fx.mul(def.hp, sc.hp);
+  let armor = def.armor, baseSpeed = def.speed;
+  // wave affix (never on bosses or sent enemies; pure function of seed+wave)
+  const affix = (!def.boss && !sent) ? waveAffix(state.seedBase, wave, state.bal.bossEvery) : null;
+  if (affix) {
+    if (affix.hpMult) maxHp = fx.mul(maxHp, F(affix.hpMult));
+    if (affix.armorAdd) armor += fx.fromInt(affix.armorAdd);
+    if (affix.speedMult) baseSpeed = fx.mul(baseSpeed, F(affix.speedMult));
+  }
   const e = {
     id: state.nextId++, type, def,
     owner: pl.id, originIndex: origin, corridorIndex: origin, corr,
     fx: fx.fromInt(corr.entrance.c) + HALF,
     fy: fx.fromInt(corr.entrance.r) + HALF,
     maxHp, hp: maxHp,
-    armor: def.armor, baseSpeed: def.speed,
+    armor, baseSpeed,
     reward: Math.round(def.reward * (sc.reward / fx.ONE)),
     statuses: {}, statusKeys: [], buffs: 0,
     loopCount: 0, transitions: 0,
     alive: true, boss: def.boss, end: def.end,
     resist: {}, sent: !!sent,
     speedBuff: fx.ONE,
+    affix: affix ? affix.id : null,
   };
   state.enemies.push(e);
 }
@@ -515,6 +547,7 @@ function onLoopComplete(state, pl, e) {
 function applyAdaptation(state, e) {
   const opts = ["speed", "health", "armor", "resist", "momentum", "hardened"];
   const pick = rng.pick(state.seedSim, opts);
+  e.adapt = e.adapt || {}; e.adapt[pick] = (e.adapt[pick] || 0) + 1; // record for UI
   switch (pick) {
     case "speed": e.speedBuff = fx.mul(e.speedBuff, F(1.15)); break;
     case "health": e.maxHp = fx.mul(e.maxHp, F(1.25)); e.hp = fx.min(e.maxHp, e.hp + fx.mul(e.maxHp, F(0.25))); break;
@@ -680,6 +713,7 @@ function addStatus(e, def, statusId, dur) {
   };
 }
 function fireSynergy(state, e, syn, tower) {
+  state.events.push({ kind: "synergy", player: e.owner, id: syn.id, name: syn.name, corridor: e.corridorIndex });
   if (syn.burst) damageEnemy(state, e, syn.burst, tower, true);
   if (syn.dotMult && e.statuses["poisoned"]) e.statuses["poisoned"].dotMult = syn.dotMult;
   if (syn.curseBoost && e.statuses["cursed"]) e.statuses["cursed"].curseBoost = syn.curseBoost;
@@ -788,14 +822,25 @@ function supportTick(state, pl, corr, tw, st, dt) {
 }
 
 function acquireTarget(state, pl, corr, tw, range) {
-  let best = null, bestScore = 0x7fffffff;
+  let best = null, bestScore = Infinity;
   const G = state.grid;
+  const mode = tw.targetMode || "first";
   for (const e of state.enemies) {
     if (!e.alive || e.owner !== pl.id || e.corr !== corr) continue;
     if (!inRange(tw, e.fx, e.fy, range)) continue;
-    let score = corr.dist[fx.floorInt(e.fy) * G.cols + fx.floorInt(e.fx)] || 0;
-    if (e.statuses["magnetized"]) score -= 1000;
-    if (tw.anchorTargetId === e.id) score -= 5000;
+    // per-tower priority (all inputs integers -> deterministic):
+    //   first  = closest to the exit (flow-field distance, lower is further along)
+    //   last   = furthest from the exit
+    //   strong = highest current HP, weak = lowest current HP
+    let score;
+    if (mode === "strong") score = -e.hp;
+    else if (mode === "weak") score = e.hp;
+    else {
+      score = corr.dist[fx.floorInt(e.fy) * G.cols + fx.floorInt(e.fx)] || 0;
+      if (mode === "last") score = -score;
+    }
+    if (e.statuses["magnetized"]) score -= 1e9;
+    if (tw.anchorTargetId === e.id) score -= 5e9;
     // stable tie-break by id
     if (score < bestScore || (score === bestScore && best && e.id < best.id)) { bestScore = score; best = e; }
   }
