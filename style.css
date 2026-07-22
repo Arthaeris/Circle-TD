@@ -735,6 +735,29 @@ body {
 #screen-flash.flash { animation: flashfade .2s; }
 @keyframes flashfade { from { opacity: .35; } to { opacity: 0; } }
 
+/* send panel (competitive + versus) */
+#send-panel .sp-note { font-size: 11px; color: var(--dim); margin: 6px 0 10px; line-height: 1.5; }
+.sp-rows { display: flex; flex-direction: column; gap: 8px; }
+.sp-row { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.2); border-radius: 10px; padding: 8px 10px; }
+.sp-info { flex: 1; min-width: 0; }
+.sp-name { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.sp-count { color: var(--gold, #ffd23d); font-size: 12px; }
+.sp-desc { font-size: 11px; color: var(--dim); }
+.sp-pips { display: inline-flex; gap: 3px; }
+.sp-pips b { width: 10px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.15); }
+.sp-pips b.on { background: var(--gold, #ffd23d); }
+.sp-send, .sp-up {
+  border: 1px solid rgba(255,255,255,.18); border-radius: 9px; min-height: 40px; padding: 0 10px;
+  background: rgba(255,255,255,.08); color: var(--ink); font-family: var(--font); font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+}
+.sp-send { border-color: var(--bad, #ff4d6d); }
+.sp-up { border-color: var(--gold, #ffd23d); }
+.sp-send.cant, .sp-up.cant { opacity: .4; pointer-events: none; }
+.sp-up.maxed { opacity: .5; pointer-events: none; }
+
+/* versus overview: eliminated seats */
+.ov-row.dead { opacity: .45; }
+
 /* build card extras: synergy hint */
 .bc-syn { font-size: 11px; color: var(--gold, #ffd23d); margin-top: 2px; }
 
