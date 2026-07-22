@@ -33,6 +33,11 @@ export function buildBalance(DB) {
     bossEvery: C.bossEvery,
     obstacleDensity: F(C.obstacleDensity),
     loopLifeLoss: C.loopLifeLoss,
+    // Early-call bonus (integers; tolerate older DBs lacking it).
+    earlyCall: {
+      base: (C.earlyCallBonus && C.earlyCallBonus.base) != null ? C.earlyCallBonus.base : 20,
+      perWave: (C.earlyCallBonus && C.earlyCallBonus.perWave) != null ? C.earlyCallBonus.perWave : 6,
+    },
 
     scaling: {
       damagePerLevel: F(DB.SCALING.damagePerLevel),
