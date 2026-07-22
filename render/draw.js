@@ -169,6 +169,14 @@ export function createRenderer(opts) {
       const sp = view.buildSpot;
       const bx = ox + sp.c * ts, by = oy + sp.r * ts, bs = ts * 3;
       if (!assets.draw("assets/ui/build-preview.PNG", bx, by, bs, bs)) { ctx.fillStyle = "rgba(80,255,120,.25)"; ctx.fillRect(bx, by, bs, bs); }
+      // range ring for the tower card currently being browsed in the build menu
+      if (view.buildPreview && view.buildPreview.range) {
+        const rr = view.buildPreview.range * ts;
+        const rx = bx + bs / 2, ry = by + bs / 2;
+        ctx.beginPath(); ctx.arc(rx, ry, rr, 0, 7);
+        ctx.strokeStyle = "rgba(120,255,160,.6)"; ctx.lineWidth = 2; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(120,255,160,.07)"; ctx.fill();
+      }
     }
     for (const tw of corr.towers) drawTower(tw, ts, ox, oy, el, view);
     // range circle for selected tower
