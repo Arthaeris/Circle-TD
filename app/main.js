@@ -9,6 +9,7 @@
  * ===========================================================================*/
 import * as fx from "../sim/fx.js";
 import { createState, step, SIM_HZ, findBuildSpot } from "../sim/core.js";
+import { AFFIXES } from "../sim/waves.js";
 import { buildBalance } from "../sim/balance.js";
 import { hashContent } from "../sim/hash.js";
 import * as C from "../net/commands.js";
@@ -34,11 +35,12 @@ const game = {
   speed: 1, time: 0, clock: 0,
   lobby: null,
   mode: "loop", gameMode: "solo",
-  selectedTowerId: null, selectedEnemyId: null, buildTile: null, buildMenuOpen: false, buildSpot: null,
+  selectedTowerId: null, selectedEnemyId: null, buildTile: null, buildMenuOpen: false, buildSpot: null, buildPreview: null,
   fieldCam: { x: 0, y: 0, zoom: 1 },
   driver: null,                      // solo or lockstep driver
   lockstep: null, room: null,
   _vortex: null, time0: 0,
+  autoWave: false, autoT: null,      // auto wave-start toggle + countdown (seconds)
 };
 let meta = SaveSystem ? SaveSystem.loadMeta() : { mastery: {} };
 
@@ -87,6 +89,7 @@ const view = {
   get buildTile() { return game.buildTile; }, set buildTile(x) { game.buildTile = x; },
   get buildMenuOpen() { return game.buildMenuOpen; }, set buildMenuOpen(x) { game.buildMenuOpen = x; },
   get buildSpot() { return game.buildSpot; }, set buildSpot(x) { game.buildSpot = x; },
+  get buildPreview() { return game.buildPreview; }, set buildPreview(x) { game.buildPreview = x; },
   fieldCam: game.fieldCam,
   fieldTopInset: () => fieldTopInset(),
   set _vortex(x) { game._vortex = x; }, get _vortex() { return game._vortex; },
@@ -110,6 +113,7 @@ const cmd = {
   mutate: (corridorId, towerId, mutId) => emit(C.mutateTower(game.me, corridorId, towerId, mutId, masteryLevel(fieldPlayer().corridors[corridorId].element))),
   startWave: () => emit(C.startWave(game.me)),
   send: (target, enemyType) => emit(C.sendEnemy(game.me, target, enemyType)),
+  setTarget: (corridorId, towerId, mode) => emit(C.setTargetMode(game.me, corridorId, towerId, mode)),
 };
 
 // ---------------------------------------------------------------------------
@@ -140,17 +144,32 @@ function afterTick(state) {
   if (state.events && state.events.length) for (const ev of state.events) handleEvent(ev);
 }
 
+const synergyToastAt = {}; // per-synergy toast throttle (display-only)
 function handleEvent(ev) {
   if (ev.player !== game.me && game.gameMode !== "coop") {
     if (ev.kind === "sent" && ev.to === game.me) ui.toast("⚠ Enemies incoming!");
     return;
   }
   switch (ev.kind) {
-    case "wave": ui.updateTopBar(); ui.updateWavePanel(); ui.toast(ev.boss ? ("\u26A0 Wave " + ev.wave + " \u2014 BOSS WAVE") : ("Wave " + ev.wave + " incoming")); break;
+    case "wave": {
+      game.autoT = null; // wave started (by us or auto) \u2014 clear any countdown
+      const affix = ev.affix && AFFIXES[ev.affix];
+      ui.updateTopBar(); ui.updateWavePanel();
+      ui.toast(ev.boss ? ("\u26A0 Wave " + ev.wave + " \u2014 BOSS WAVE") : ("Wave " + ev.wave + (affix ? ` \u2014 ${affix.icon} ${affix.name} (${affix.desc})` : " incoming")));
+      break;
+    }
+    case "earlyBonus": ui.toast("\u26A1 Early call! +" + ev.bonus); ui.updateTopBar(); break;
+    case "synergy": {
+      const now = Date.now();
+      if (!synergyToastAt[ev.id] || now - synergyToastAt[ev.id] > 4000) { synergyToastAt[ev.id] = now; ui.toast("\u2697 " + ev.name + "!"); }
+      break;
+    }
     case "reject": { const M = { funds: (game.state.economy === "shared" ? "Not enough gold." : "Not enough essence."), noRoom: "No room \u2014 towers need 3\u00D73 space and can\u2019t fully block the path.", needMax: "Reach max level to mutate.", noSlots: "No mutation slots \u2014 raise Mastery." }; ui.toast(M[ev.reason] || "Cannot do that here."); break; }
     case "waveClear":
       ui.toast(`Wave ${ev.wave} cleared! +${ev.bonus}`);
       if (ev.autosave) autosave();             // D3 — autosave after every wave
+      // auto wave-start: schedule the next wave, but NEVER the end boss (prep)
+      if (game.autoWave && fieldPlayer().phase === "build") game.autoT = 5;
       ui.updateTopBar(); ui.updateWavePanel(); ui.updateEnemyOverview(); break;
     case "prep": ui.toast("Final wave cleared! Summon the End Boss from the Vortex."); break;
     case "endboss": ui.toast("THE SEALED ONE awakens!"); break;
@@ -173,7 +192,7 @@ function refreshMenu() { const c = $("btn-continue"); if (c) c.classList.toggle(
 // ---------------------------------------------------------------------------
 // SETUP -> START RUN
 // ---------------------------------------------------------------------------
-const setup = { mode: "loop", corridors: 4, economy: "shared", status: "standard", gameMode: "solo", elements: [] };
+const setup = { mode: "loop", corridors: 4, economy: "shared", status: "standard", gameMode: "solo", pacing: "manual", elements: [] };
 function openSetup() {
   const avail = DB.availableElements(meta.mastery);
   setup.elements = []; for (let i = 0; i < 8; i++) setup.elements.push(avail[i % avail.length]);
@@ -195,7 +214,8 @@ function startRun(cfg, seed) {
   game.mpHosting = false;
   game.me = cfg.me || 0; game.speed = 1; game.clock = 0;
   game.view = "world"; game.activeCorridor = 0; game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
-  game.selectedTowerId = game.selectedEnemyId = game.buildTile = null;
+  game.selectedTowerId = game.selectedEnemyId = game.buildTile = null; game.buildPreview = null;
+  game.autoWave = cfg.pacing === "auto"; game.autoT = null; refreshAutoBtn();
   game.driver = (game.gameMode === "solo") ? makeSoloDriver(game.state) : makeNetDriver(game.state, game.lockstep);
   if (sendBtn) sendBtn.style.display = "none";
   showScreen("game"); resize();
@@ -214,9 +234,10 @@ function serializeRun() {
   return {
     v: 2, seed: s.seedBase, mode: s.mode, gameMode: "solo", economy: s.economy, statusMode: s.statusMode,
     corridorCount: pl.corridorCount, elements: pl.elements.slice(),
+    pacing: game.autoWave ? "auto" : "manual",
     gold: pl.gold, essence: Object.assign({}, pl.essence), lives: pl.lives, wave: pl.wave, phase: pl.phase,
     stats: Object.assign({}, pl.stats),
-    corridors: pl.corridors.map((c) => ({ towers: c.towers.map((t) => ({ defId: t.def.id, c: t.c, r: t.r, level: t.level, expert: t.expert, kills: t.kills, mutations: t.mutations.slice() })), spawnedTotal: c.spawnedTotal })),
+    corridors: pl.corridors.map((c) => ({ towers: c.towers.map((t) => ({ defId: t.def.id, c: t.c, r: t.r, level: t.level, expert: t.expert, kills: t.kills, mutations: t.mutations.slice(), targetMode: t.targetMode || "first" })), spawnedTotal: c.spawnedTotal })),
   };
 }
 function autosave() { try { localStorage.setItem(RUN_KEY, JSON.stringify(serializeRun())); } catch (e) {} }
@@ -227,7 +248,7 @@ function continueRun() {
   restoreRun(d);
 }
 function restoreRun(d) {
-  startRun({ mode: d.mode, corridors: d.corridorCount, economy: d.economy, status: d.statusMode, gameMode: "solo", elements: d.elements }, d.seed);
+  startRun({ mode: d.mode, corridors: d.corridorCount, economy: d.economy, status: d.statusMode, gameMode: "solo", pacing: d.pacing || "manual", elements: d.elements }, d.seed);
   const pl = game.state.players[0];
   pl.lives = d.lives; pl.wave = d.wave; pl.phase = d.phase === "wave" || d.phase === "endboss" ? "build" : d.phase;
   pl.stats = Object.assign(pl.stats, d.stats || {});
@@ -243,7 +264,7 @@ function restoreRun(d) {
   // now set the true saved currencies
   pl.gold = d.gold; pl.essence = Object.assign(pl.essence, d.essence);
   // restore tower level/expert by replaying upgrades (level-1 times)
-  d.corridors.forEach((cd, ci) => { const corr = pl.corridors[ci]; cd.towers.forEach((tDef, i) => { const tw = corr.towers[i]; if (!tw) return; tw.level = tDef.level; tw.expert = tDef.expert; tw.kills = tDef.kills; tw.mutations = tDef.mutations.slice(); }); });
+  d.corridors.forEach((cd, ci) => { const corr = pl.corridors[ci]; cd.towers.forEach((tDef, i) => { const tw = corr.towers[i]; if (!tw) return; tw.level = tDef.level; tw.expert = tDef.expert; tw.kills = tDef.kills; tw.mutations = tDef.mutations.slice(); tw.targetMode = tDef.targetMode || "first"; }); });
   ui.updateTopBar(); ui.updateEnemyOverview(); ui.updateWavePanel();
   ui.toast("Run loaded");
 }
@@ -294,9 +315,10 @@ function towerAt(corr, c, r) { const S = DB.CONFIG.towerSize; for (const t of co
 // ---------------------------------------------------------------------------
 function endScreen(win) {
   const pl = game.state.players[game.me];
+  let unlockMsgs = [];
   if (SaveSystem) {
     const proxy = { mode: game.mode, elements: pl.elements, wave: pl.wave, totalWaves: pl.totalWaves, score: pl.stats.score };
-    try { if (win) SaveSystem.recordVictory(meta, proxy); else SaveSystem.recordDefeat(meta, proxy); SaveSystem.saveMeta(meta); } catch (e) {}
+    try { if (win) unlockMsgs = SaveSystem.recordVictory(meta, proxy) || []; else SaveSystem.recordDefeat(meta, proxy); SaveSystem.saveMeta(meta); } catch (e) {}
   }
   localStorage.removeItem(RUN_KEY);
   const sc = $("end-screen"); if (!sc) return;
@@ -305,7 +327,24 @@ function endScreen(win) {
   // "Continue into Endless" only makes sense after a victory (not after defeat,
   // and not when the run was already endless).
   const eb = sc.querySelector("#end-endless"); if (eb) eb.style.display = (win && game.mode !== "endless") ? "" : "none";
-  sc.querySelector("#end-body").innerHTML = `<div class="end-stat">Waves <b>${pl.wave}</b></div><div class="end-stat">Kills <b>${pl.stats.kills}</b></div><div class="end-stat">Bosses <b>${pl.stats.bossesKilled}</b></div><div class="end-stat">Score <b>${pl.stats.score}</b></div>`;
+  let html = `<div class="end-stat">Waves <b>${pl.wave}</b></div><div class="end-stat">Kills <b>${pl.stats.kills}</b></div><div class="end-stat">Bosses <b>${pl.stats.bossesKilled}</b></div><div class="end-stat">Score <b>${pl.stats.score}</b></div>`;
+  // Mastery feedback: connect this run to the meta-progression (§ wins→mastery).
+  if (win) {
+    const seen = new Set();
+    for (const eid of pl.elements) {
+      if (seen.has(eid)) continue; seen.add(eid);
+      const el = DB.ELEMENTS[eid]; if (!el) continue;
+      const lvl = (meta.mastery && meta.mastery[eid]) || 0;
+      const wins = (meta.elementWins && meta.elementWins[eid]) || 0;
+      let prog;
+      if (lvl >= 5) prog = "Mastery MAX";
+      else if (lvl === 4) prog = "Reach Wave 100 → Mastery 5";
+      else prog = wins + "/" + DB.MASTERY.winsRequired[lvl + 1] + " wins → Mastery " + (lvl + 1);
+      html += `<div class="end-stat"><span>${el.icon} ${el.name} +1 win</span><b>${prog}</b></div>`;
+    }
+  }
+  if (unlockMsgs.length) html += `<div class="end-unlocks">${unlockMsgs.map((m) => `<span class="unlock">🎉 ${m}</span>`).join("")}</div>`;
+  sc.querySelector("#end-body").innerHTML = html;
   sc.classList.add("show");
 }
 
@@ -341,7 +380,18 @@ function boot() {
 
   loop = createLoop({
     onTick: () => { if (game.driver) game.driver.tick(); },
-    onFrame: (dt, running) => { if (running) game.clock += dt; }, // real wall-clock (speed-independent)
+    onFrame: (dt, running) => {
+      if (!running) return;
+      game.clock += dt; // real wall-clock (speed-independent)
+      // auto wave-start countdown (shell-level: it only ever EMITS a command)
+      if (game.autoT != null) {
+        game.autoT -= dt;
+        if (game.autoT <= 0) {
+          game.autoT = null;
+          if (game.autoWave && game.state && fieldPlayer().phase === "build") cmd.startWave();
+        }
+      }
+    },
     getSpeed: () => game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1),
     onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
     isRunning: () => {
@@ -351,7 +401,12 @@ function boot() {
     },
   });
   loop.start();
-  setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); } }, 250);
+  setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); refreshAutoBtn(); } }, 250);
+}
+function refreshAutoBtn() {
+  const b = $("quick-auto-wave"); if (!b) return;
+  b.classList.toggle("on", !!game.autoWave);
+  b.textContent = game.autoWave ? (game.autoT != null ? "⟳ " + Math.max(1, Math.ceil(game.autoT)) + "s" : "⟳ Auto ✓") : "⟳ Auto";
 }
 function phaseRunning() { if (!game.state) return false; const pl = game.state.players[game.me]; return ["build", "wave", "prep", "endboss"].includes(pl.phase); }
 
@@ -365,10 +420,11 @@ function bindUI() {
   bind("btn-mastery", () => ui.openMastery());
   bind("btn-menu-save", () => { const m = $("save-modal"); if (m) m.classList.add("show"); });
   bind("btn-setup-back", () => { if (game.mpHosting && game.lobby) { game.mpHosting = false; window.CTWMultiplayer.setRoomStatus(game.lobby.roomId, "lobby").catch(() => {}); openLobby(); } else showScreen("menu"); });
-  bind("btn-start-run", () => { if (game.mpHosting) { beginMultiplayerMatch(); return; } startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, elements: setup.elements }); });
+  bind("btn-start-run", () => { if (game.mpHosting) { beginMultiplayerMatch(); return; } startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, pacing: setup.pacing, elements: setup.elements }); });
   document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { setup.mode = b.dataset.mode; if (setup.mode === "single") setup.corridors = 1; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-econ]").forEach((b) => b.onclick = () => { setup.economy = b.dataset.econ; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { setup.status = b.dataset.status; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  document.querySelectorAll("[data-pacing]").forEach((b) => b.onclick = () => { setup.pacing = b.dataset.pacing; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => {
     if (game.mpHosting) { ui.toast("Match type is set by the room"); return; }
     const mp = b.dataset.gamemode !== "solo";
@@ -385,7 +441,15 @@ function bindUI() {
   bind("btn-world", () => setView("world"));
   bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + fieldPlayer().corridorCount) % fieldPlayer().corridorCount));
   bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % fieldPlayer().corridorCount));
-  bind("quick-start-wave", () => cmd.startWave());
+  bind("quick-start-wave", () => { game.autoT = null; cmd.startWave(); });
+  // auto wave-start lock: never press "Start Wave" again (end boss stays manual)
+  bind("quick-auto-wave", () => {
+    game.autoWave = !game.autoWave;
+    if (!game.autoWave) game.autoT = null;
+    else if (game.state && fieldPlayer().phase === "build") game.autoT = 5;
+    refreshAutoBtn();
+    ui.toast(game.autoWave ? "Auto wave-start ON — waves begin 5s after a clear" : "Auto wave-start OFF");
+  });
   bind("quick-speed-cycle", () => {
     if (game.gameMode === "solo") { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); }
     else if (game.lobby && game.lobby.host) { const ns = ((game.state.netSpeed || 1) >= 3) ? 1 : (game.state.netSpeed || 1) + 1; emit(C.setSpeed(game.me, ns)); ui.toast("Speed \u2192 \u00D7" + ns); }
@@ -393,10 +457,10 @@ function bindUI() {
   });
   bind("btn-settings-ingame", () => togglePause(true));
   bind("pause-resume", () => togglePause(false));
-  bind("pause-restart", () => { if (game.gameMode !== "solo") { ui.toast("Restart is solo only"); return; } togglePause(false); startRun({ mode: game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
+  bind("pause-restart", () => { if (game.gameMode !== "solo") { ui.toast("Restart is solo only"); return; } togglePause(false); startRun({ mode: game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", pacing: game.autoWave ? "auto" : "manual", elements: game.state.players[game.me].elements }); });
   bind("pause-save", () => { autosave(); ui.toast("Run saved to this device"); });
   bind("pause-exit", () => { togglePause(false); showScreen("menu"); refreshMenu(); });
-  bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
+  bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", pacing: game.autoWave ? "auto" : "manual", elements: game.state.players[game.me].elements }); });
   bind("end-menu", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); showScreen("menu"); refreshMenu(); });
   bind("end-endless", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); game.state.players[game.me].phase = "build"; game.state.mode = "endless"; game.mode = "endless"; ui.updateTopBar(); ui.updateWavePanel(); ui.toast("Endless Mode!"); });
   // ---- Save / Import / Export ----
