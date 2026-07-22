@@ -44,11 +44,26 @@ let meta = SaveSystem ? SaveSystem.loadMeta() : { mastery: {} };
 
 let canvas, assets, renderer, ui, loop;
 let musicMenu = null, musicGame = null, musicUnlocked = false;
+
+// ---- audio preference (local-only, like the render-fps setting) ------------
+const AUDIO_KEY = "ctw_audio_v1";
+let audioPref = { muted: false, vol: 0.4 };
+function loadAudioPref() {
+  try { const d = JSON.parse(localStorage.getItem(AUDIO_KEY)); if (d && typeof d === "object") audioPref = { muted: !!d.muted, vol: Math.max(0, Math.min(1, +d.vol || 0.4)) }; } catch (e) {}
+}
+function saveAudioPref() { try { localStorage.setItem(AUDIO_KEY, JSON.stringify(audioPref)); } catch (e) {} }
+function applyAudioPref() {
+  for (const m of [musicMenu, musicGame]) { if (!m) continue; m.muted = audioPref.muted; m.volume = audioPref.vol; }
+  const btn = $("audio-mute"); if (btn) btn.textContent = audioPref.muted ? "🔇 Off" : "🔊 On";
+  const vol = $("audio-vol"); if (vol) vol.value = Math.round(audioPref.vol * 100);
+}
 function initAudio() {
+  loadAudioPref();
   try {
-    musicMenu = new Audio("assets/audio/music_menu.mp3"); musicMenu.loop = true; musicMenu.volume = 0.4;
-    musicGame = new Audio("assets/audio/music_game.mp3"); musicGame.loop = true; musicGame.volume = 0.4;
+    musicMenu = new Audio("assets/audio/music_menu.mp3"); musicMenu.loop = true;
+    musicGame = new Audio("assets/audio/music_game.mp3"); musicGame.loop = true;
   } catch (e) {}
+  applyAudioPref();
 }
 function unlockMusic() { musicUnlocked = true; }
 function playMenuMusic() { if (!musicUnlocked || !musicMenu) return; if (musicGame) musicGame.pause(); if (musicMenu.paused) musicMenu.play().catch(() => {}); }
@@ -214,13 +229,19 @@ function continueRun() {
 function restoreRun(d) {
   startRun({ mode: d.mode, corridors: d.corridorCount, economy: d.economy, status: d.statusMode, gameMode: "solo", elements: d.elements }, d.seed);
   const pl = game.state.players[0];
-  pl.gold = d.gold; pl.essence = Object.assign(pl.essence, d.essence); pl.lives = d.lives; pl.wave = d.wave; pl.phase = d.phase === "wave" || d.phase === "endboss" ? "build" : d.phase;
+  pl.lives = d.lives; pl.wave = d.wave; pl.phase = d.phase === "wave" || d.phase === "endboss" ? "build" : d.phase;
   pl.stats = Object.assign(pl.stats, d.stats || {});
+  // Flood funds BEFORE replaying builds: the sim validates & charges each Build
+  // command, so replaying against the saved gold would drain it (or silently
+  // reject towers). The real currencies are restored after the replay tick.
+  pl.gold = 1e9; for (const k in pl.essence) pl.essence[k] = 1e9;
   // rebuild towers via Build commands (deterministic placement)
   d.corridors.forEach((cd, ci) => { cd.towers.forEach((t) => {
     emit(C.buildTower(0, ci, t.c + 1, t.r + 1, t.defId, 5)); // +1 because build centers on tap tile
   }); });
   game.driver.tick(); // apply queued builds
+  // now set the true saved currencies
+  pl.gold = d.gold; pl.essence = Object.assign(pl.essence, d.essence);
   // restore tower level/expert by replaying upgrades (level-1 times)
   d.corridors.forEach((cd, ci) => { const corr = pl.corridors[ci]; cd.towers.forEach((tDef, i) => { const tw = corr.towers[i]; if (!tw) return; tw.level = tDef.level; tw.expert = tDef.expert; tw.kills = tDef.kills; tw.mutations = tDef.mutations.slice(); }); });
   ui.updateTopBar(); ui.updateEnemyOverview(); ui.updateWavePanel();
@@ -281,6 +302,9 @@ function endScreen(win) {
   const sc = $("end-screen"); if (!sc) return;
   sc.querySelector("#end-title").textContent = win ? "VICTORY" : "DEFEAT";
   sc.querySelector("#end-title").className = win ? "win" : "lose";
+  // "Continue into Endless" only makes sense after a victory (not after defeat,
+  // and not when the run was already endless).
+  const eb = sc.querySelector("#end-endless"); if (eb) eb.style.display = (win && game.mode !== "endless") ? "" : "none";
   sc.querySelector("#end-body").innerHTML = `<div class="end-stat">Waves <b>${pl.wave}</b></div><div class="end-stat">Kills <b>${pl.stats.kills}</b></div><div class="end-stat">Bosses <b>${pl.stats.bossesKilled}</b></div><div class="end-stat">Score <b>${pl.stats.score}</b></div>`;
   sc.classList.add("show");
 }
@@ -351,8 +375,13 @@ function bindUI() {
     if (mp && lobbyPlayerCount() < 2) { ui.toast("Join a multiplayer room with another player first."); return; }
     setup.gameMode = b.dataset.gamemode;
     updateGameModeButtons();
+    ui.updateSetupDescs(setup);
   });
   document.querySelectorAll("[data-fps]").forEach((b) => b.onclick = () => { if (loop) loop.setRenderFps(+b.dataset.fps); document.querySelectorAll("[data-fps]").forEach((x) => x.classList.toggle("sel", x === b)); ui.toast("Render rate: " + b.dataset.fps + " fps"); });
+  // audio controls (pause menu)
+  bind("audio-mute", () => { audioPref.muted = !audioPref.muted; saveAudioPref(); applyAudioPref(); });
+  const volSlider = $("audio-vol");
+  if (volSlider) volSlider.oninput = () => { audioPref.vol = (+volSlider.value || 0) / 100; if (audioPref.vol > 0) audioPref.muted = false; saveAudioPref(); applyAudioPref(); };
   bind("btn-world", () => setView("world"));
   bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + fieldPlayer().corridorCount) % fieldPlayer().corridorCount));
   bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % fieldPlayer().corridorCount));
@@ -369,7 +398,7 @@ function bindUI() {
   bind("pause-exit", () => { togglePause(false); showScreen("menu"); refreshMenu(); });
   bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", elements: game.state.players[game.me].elements }); });
   bind("end-menu", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); showScreen("menu"); refreshMenu(); });
-  bind("end-endless", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); game.state.players[game.me].phase = "build"; game.state.mode = "endless"; ui.toast("Endless Mode!"); });
+  bind("end-endless", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); game.state.players[game.me].phase = "build"; game.state.mode = "endless"; game.mode = "endless"; ui.updateTopBar(); ui.updateWavePanel(); ui.toast("Endless Mode!"); });
   // ---- Save / Import / Export ----
   bind("sm-close", () => $("save-modal").classList.remove("show"));
   bind("sm-export-run", () => { const t = $("save-text"); if (t && SaveSystem) t.value = SaveSystem.exportRunText(serializeRun()); });
@@ -390,8 +419,6 @@ function bindUI() {
   // ---- Multiplayer lobby (Tier A: rooms, ready, feedback) ----
   bind("btn-create-room", () => mpCreateRoom());
   bind("btn-join-room", () => mpJoinRoom());
-  bind("btn-show-room", () => alert(JSON.stringify(game.lobby && game.lobby.room, null, 2)));
-  bind("btn-firebase-test", async () => { try { if (!window.CTWMultiplayer) return ui.toast("Multiplayer not loaded"); await window.CTWMultiplayer.createTestRoom("test-room"); ui.toast("Firebase write OK"); } catch (err) { ui.toast("Firebase error: " + err.message); } });
   bind("mp-lobby-close", () => $("multiplayer-lobby").classList.remove("show"));
   bind("mp-ready", () => mpToggleReady());
   bind("mp-start", () => mpStart());
@@ -599,8 +626,12 @@ function doSend() {
 }
 
 function preventBrowserGestures() {
-  let lastEnd = 0;
-  document.addEventListener("touchend", (e) => { const now = Date.now(); if (now - lastEnd <= 300) e.preventDefault(); lastEnd = now; }, { passive: false });
+  // Double-tap zoom is prevented via CSS: `touch-action: manipulation` on
+  // html/body/#app (mobile.css) applies to all descendants, so no global
+  // touchend suppression is needed — rapid taps stay responsive.
+  // The gesture* events still need blocking: iOS Safari's pinch-zoom bypasses
+  // touch-action. Field pinch-zoom is unaffected (it uses touch events on the
+  // canvas, which has touch-action: none).
   ["gesturestart", "gesturechange", "gestureend"].forEach((g) => document.addEventListener(g, (e) => e.preventDefault(), { passive: false }));
 }
 
