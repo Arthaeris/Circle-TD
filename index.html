@@ -48,8 +48,6 @@
         <button id="btn-menu-save" class="btn">Save / Import / Export</button>
         <button id="btn-create-room" class="btn">Create Multiplayer Room</button>
         <button id="btn-join-room" class="btn">Join Multiplayer Room</button>
-        <button id="btn-show-room" class="btn">Show Room</button>
-        <button id="btn-firebase-test" class="btn">Firebase Test</button>
       </div>
     </div>
   </section>
@@ -70,6 +68,7 @@
               <button class="chip" data-mode="loop">Loop Mode</button>
               <button class="chip" data-mode="endless">Endless</button>
             </div>
+            <p class="setup-desc" id="desc-mode"></p>
           </div>
           <div class="setup-section">
             <h3>Match Type</h3>
@@ -78,6 +77,7 @@
               <button class="chip" data-gamemode="coop">Co-op</button>
               <button class="chip" data-gamemode="competitive">Competitive</button>
             </div>
+            <p class="setup-desc" id="desc-gamemode"></p>
           </div>
           <div class="setup-section">
             <h3>Corridors — <span id="shape-name"></span></h3>
@@ -89,6 +89,7 @@
               <button class="chip" data-econ="shared">Shared Gold</button>
               <button class="chip" data-econ="elemental">Elemental Essence</button>
             </div>
+            <p class="setup-desc" id="desc-econ"></p>
           </div>
           <div class="setup-section">
             <h3>Status System</h3>
@@ -96,6 +97,7 @@
               <button class="chip" data-status="standard">Single Status</button>
               <button class="chip" data-status="advanced">Advanced Stacking</button>
             </div>
+            <p class="setup-desc" id="desc-status"></p>
           </div>
         </div>
         <div class="setup-right">
@@ -136,6 +138,7 @@
       <div id="mp-banner"></div>
     </div>
     <div id="quick-wave-controls">
+      <div id="wave-preview"></div>
       <button id="quick-start-wave" class="btn primary">▶ Start Wave</button>
       <button id="quick-speed-cycle" class="btn ghost">×1</button>
     </div>
@@ -153,6 +156,11 @@
           <button class="btn" data-fps="30">30</button>
           <button class="btn" data-fps="45">45</button>
           <button class="btn" data-fps="60">60</button>
+        </div>
+        <div id="audio-row">
+          <span class="dim">Music</span>
+          <button id="audio-mute" class="btn" aria-label="Toggle music">🔊 On</button>
+          <input type="range" id="audio-vol" min="0" max="100" value="40" aria-label="Music volume" />
         </div>
       </div>
     </div>
