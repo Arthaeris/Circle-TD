@@ -72,18 +72,24 @@ function playMenuMusic() { if (!musicUnlocked || !musicMenu) return; if (musicGa
 function playGameMusic() { if (!musicUnlocked || !musicGame) return; if (musicMenu) musicMenu.pause(); if (musicGame.paused) musicGame.play().catch(() => {}); }
 
 function masteryLevel(el) { return (meta.mastery && meta.mastery[el]) || 0; }
-function fieldId() { return game.gameMode === "coop" ? 0 : game.me; }
+function isVersus() { return game.gameMode === "versus"; }
+// the seat whose field is being VIEWED (versus: activeCorridor doubles as seat index)
+function fieldId() { return game.gameMode === "coop" ? 0 : (isVersus() ? game.activeCorridor : game.me); }
 function fieldPlayer() { return game.state.players[fieldId()]; }
+function myPlayer() { return game.state.players[game.me]; }
+function seatName(i) { return i === game.me ? "You" : "NPC " + i; }
+function localSimMode() { return game.gameMode === "solo" || game.gameMode === "versus"; } // offline: pausable, local speed
 
 // view object the renderer + ui read (player resolves live)
 const view = {
   get state() { return game.state; }, get me() { return game.me; },
+  get versus() { return game.gameMode === "versus"; },
   get player() { return game.state.players[game.me]; },
-  get fieldId() { return game.gameMode === "coop" ? 0 : game.me; },
-  get field() { return game.state.players[game.gameMode === "coop" ? 0 : game.me]; },
+  get fieldId() { return fieldId(); },
+  get field() { return game.state.players[fieldId()]; },
   get screen() { return game.screen; }, get view() { return game.view; },
   get activeCorridor() { return game.activeCorridor; },
-  get time() { return game.clock; }, get speed() { return game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1); },
+  get time() { return game.clock; }, get speed() { return localSimMode() ? game.speed : ((game.state && game.state.netSpeed) || 1); },
   get selectedTowerId() { return game.selectedTowerId; }, set selectedTowerId(x) { game.selectedTowerId = x; },
   get selectedEnemyId() { return game.selectedEnemyId; }, set selectedEnemyId(x) { game.selectedEnemyId = x; },
   get buildTile() { return game.buildTile; }, set buildTile(x) { game.buildTile = x; },
@@ -114,6 +120,14 @@ const cmd = {
   startWave: () => emit(C.startWave(game.me)),
   send: (target, enemyType) => emit(C.sendEnemy(game.me, target, enemyType)),
   setTarget: (corridorId, towerId, mode) => emit(C.setTargetMode(game.me, corridorId, towerId, mode)),
+  upgradeSend: (enemyType) => emit(C.upgradeSend(game.me, enemyType)),
+  // sends from the send panel: versus targets are decided by the sim (next
+  // living corridor); competitive picks the next living opponent here.
+  sendAuto: (enemyType) => {
+    if (isVersus()) { emit(C.sendEnemy(game.me, 0, enemyType)); return; }
+    const n = game.state.players.length;
+    for (let i = 1; i < n; i++) { const idx = (game.me + i) % n; if (game.state.players[idx].alive) { emit(C.sendEnemy(game.me, idx, enemyType)); return; } }
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -146,10 +160,15 @@ function afterTick(state) {
 
 const synergyToastAt = {}; // per-synergy toast throttle (display-only)
 function handleEvent(ev) {
-  if (ev.player !== game.me && game.gameMode !== "coop") {
-    if (ev.kind === "sent" && ev.to === game.me) ui.toast("⚠ Enemies incoming!");
+  const mine = ev.player === game.me || ev.from === game.me;
+  if (!mine && game.gameMode !== "coop") {
+    if (ev.kind === "sent" && ev.to === game.me) ui.toast("⚠ Enemies incoming" + (isVersus() && ev.from != null ? " from " + seatName(ev.from) : "") + "!");
+    if (isVersus() && ev.kind === "defeat") { ui.toast("☠ " + seatName(ev.player) + " has fallen!"); ui.updateEnemyOverview(); }
     return;
   }
+  if (ev.kind === "sent" && ev.from === game.me) { ui.toast("⚔ Sent " + (ev.count > 1 ? ev.count + "× " : "") + ev.type + " (Lv" + (ev.level || 1) + ")"); ui.updateTopBar(); return; }
+  if (ev.kind === "sendLevel") { ui.toast("⬆ " + ev.type + " sends upgraded to Lv" + ev.level); ui.updateTopBar(); return; }
+  if (ev.kind === "leak" && isVersus()) { flash("#ff4d6d"); ui.updateTopBar(); return; }
   switch (ev.kind) {
     case "wave": {
       game.autoT = null; // wave started (by us or auto) \u2014 clear any countdown
@@ -169,7 +188,7 @@ function handleEvent(ev) {
       ui.toast(`Wave ${ev.wave} cleared! +${ev.bonus}`);
       if (ev.autosave) autosave();             // D3 — autosave after every wave
       // auto wave-start: schedule the next wave, but NEVER the end boss (prep)
-      if (game.autoWave && fieldPlayer().phase === "build") game.autoT = 5;
+      if (game.autoWave && myPlayer().phase === "build") game.autoT = 5;
       ui.updateTopBar(); ui.updateWavePanel(); ui.updateEnemyOverview(); break;
     case "prep": ui.toast("Final wave cleared! Summon the End Boss from the Vortex."); break;
     case "endboss": ui.toast("THE SEALED ONE awakens!"); break;
@@ -196,19 +215,34 @@ const setup = { mode: "loop", corridors: 4, economy: "shared", status: "standard
 function openSetup() {
   const avail = DB.availableElements(meta.mastery);
   setup.elements = []; for (let i = 0; i < 8; i++) setup.elements.push(avail[i % avail.length]);
-  if (!game.mpHosting && lobbyPlayerCount() < 2 && setup.gameMode !== "solo") setup.gameMode = "solo";
+  if (!game.mpHosting && lobbyPlayerCount() < 2 && setup.gameMode !== "solo" && setup.gameMode !== "versus") setup.gameMode = "solo";
   showScreen("setup"); ui.renderSetup(setup, DB.availableElements(meta.mastery)); updateGameModeButtons();
 }
 
 function startRun(cfg, seed) {
   game.gameMode = cfg.gameMode || "solo";
   game.mode = cfg.mode;
-  const corridorCount = cfg.mode === "single" ? 1 : cfg.corridors;
-  const players = [{ corridorCount, elements: cfg.elements.slice(0, corridorCount) }];
-  if (game.gameMode !== "solo") for (let i = 1; i < (cfg.playerCount || 2); i++) players.push({ corridorCount, elements: cfg.elements.slice(0, corridorCount) });
+  let players, mode = cfg.mode, economy = cfg.economy;
+  if (game.gameMode === "versus") {
+    // Offline vs NPCs: one corridor per seat, seat 0 = human with the chosen
+    // element; the remaining elements are dealt to the NPCs at random.
+    const seats = Math.max(3, Math.min(8, cfg.corridors || 4)); // 2..7 NPC rivals
+    const mine = cfg.elements[0] || "fire";
+    const pool = DB.ELEMENT_ORDER.filter((e) => e !== mine);
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+    players = [{ corridorCount: 1, elements: [mine] }];
+    for (let i = 0; i < seats - 1; i++) players.push({ corridorCount: 1, elements: [pool[i % pool.length]] });
+    mode = "endless";      // versus ends by elimination, never by wave count
+    economy = "shared";    // versus is a gold economy (LTW-style)
+    game.mode = "endless";
+  } else {
+    const corridorCount = cfg.mode === "single" ? 1 : cfg.corridors;
+    players = [{ corridorCount, elements: cfg.elements.slice(0, corridorCount) }];
+    if (game.gameMode !== "solo") for (let i = 1; i < (cfg.playerCount || 2); i++) players.push({ corridorCount, elements: cfg.elements.slice(0, corridorCount) });
+  }
   const stateCfg = {
     seed: seed != null ? seed : ((Math.random() * 1e9) | 0),
-    mode: cfg.mode, gameMode: game.gameMode, economy: cfg.economy, statusMode: cfg.status, players,
+    mode, gameMode: game.gameMode, economy, statusMode: cfg.status, players,
   };
   game.state = createState(bal, stateCfg);
   game.mpHosting = false;
@@ -216,8 +250,9 @@ function startRun(cfg, seed) {
   game.view = "world"; game.activeCorridor = 0; game.fieldCam = { x: 0, y: 0, zoom: 1 }; view.fieldCam = game.fieldCam;
   game.selectedTowerId = game.selectedEnemyId = game.buildTile = null; game.buildPreview = null;
   game.autoWave = cfg.pacing === "auto"; game.autoT = null; refreshAutoBtn();
-  game.driver = (game.gameMode === "solo") ? makeSoloDriver(game.state) : makeNetDriver(game.state, game.lockstep);
-  if (sendBtn) sendBtn.style.display = "none";
+  game.driver = localSimMode() ? makeSoloDriver(game.state) : makeNetDriver(game.state, game.lockstep);
+  setupBots();
+  setupSendButton();
   showScreen("game"); resize();
   ui.closeAllPanels(); setView("world", true);
   ui.updateTopBar(); ui.updateEnemyOverview(); ui.updateWavePanel();
@@ -240,7 +275,7 @@ function serializeRun() {
     corridors: pl.corridors.map((c) => ({ towers: c.towers.map((t) => ({ defId: t.def.id, c: t.c, r: t.r, level: t.level, expert: t.expert, kills: t.kills, mutations: t.mutations.slice(), targetMode: t.targetMode || "first" })), spawnedTotal: c.spawnedTotal })),
   };
 }
-function autosave() { try { localStorage.setItem(RUN_KEY, JSON.stringify(serializeRun())); } catch (e) {} }
+function autosave() { if (game.gameMode !== "solo") return; try { localStorage.setItem(RUN_KEY, JSON.stringify(serializeRun())); } catch (e) {} }
 function hasRun() { return !!localStorage.getItem(RUN_KEY); }
 function continueRun() {
   const raw = localStorage.getItem(RUN_KEY); if (!raw) return;
@@ -278,8 +313,19 @@ function setView(v, instant) {
   const ov = $("enemy-overview"); if (ov) ov.classList.toggle("show", v === "world");
   if (v === "field") { updateCorridorName(); clampFieldCamera(); }
 }
+function corridorNavCount() { return isVersus() ? game.state.players.length : fieldPlayer().corridorCount; }
 function enterCorridor(i) { game.activeCorridor = i; if (game.view === "field") { ui.closeAllPanels(); updateCorridorName(); } else setView("field"); }
-function updateCorridorName() { const corr = fieldPlayer().corridors[game.activeCorridor]; if (!corr) return; const el = DB.ELEMENTS[corr.element]; const nm = $("corridor-name"); if (nm) nm.innerHTML = `${el.icon} ${el.name} Corridor`; }
+function updateCorridorName() {
+  const nm = $("corridor-name"); if (!nm) return;
+  if (isVersus()) {
+    const p = game.state.players[game.activeCorridor]; if (!p) return;
+    const el = DB.ELEMENTS[p.elements[0]];
+    nm.innerHTML = `${el.icon} ${seatName(game.activeCorridor)}${p.alive ? "" : " ☠"} — ${el.name}`;
+    return;
+  }
+  const corr = fieldPlayer().corridors[game.activeCorridor]; if (!corr) return;
+  const el = DB.ELEMENTS[corr.element]; nm.innerHTML = `${el.icon} ${el.name} Corridor`;
+}
 function fieldTopInset() { const nav = $("field-nav"); if (!nav || !nav.classList.contains("show")) return 12; const stage = $("game-stage"); if (!stage) return 12; return Math.max(12, nav.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + 10); }
 function flash(color) { const o = $("screen-flash"); if (!o) return; o.style.background = color; o.classList.add("flash"); setTimeout(() => o.classList.remove("flash"), 200); }
 function clampZoom() { game.fieldCam.zoom = Math.max(1, Math.min(4, game.fieldCam.zoom)); }
@@ -297,14 +343,16 @@ function onCanvasClick(ev) {
   }
   const { ts, ox, oy } = renderer.fieldGeom(view);
   const fxv = (px - ox) / ts, fyv = (py - oy) / ts;
-  const corr = pl.corridors[game.activeCorridor];
+  const corr = pl.corridors[isVersus() ? 0 : game.activeCorridor];
+  const ownField = !isVersus() || game.activeCorridor === game.me; // spectating NPC corridors is read-only
   let near = null, nd = 0.7 * 0.7;
   for (const e of game.state.enemies) { if (e.owner !== fieldId() || e.corridorIndex !== corr.index) continue; const ex = fx.toFloat(e.fx), ey = fx.toFloat(e.fy); const dx = fxv - ex, dy = fyv - ey, d = dx * dx + dy * dy; if (d < nd) { nd = d; near = e; } }
   const c = Math.floor(fxv), r = Math.floor(fyv);
   if (c < 0 || r < 0 || c >= game.state.grid.cols || r >= game.state.grid.rows) { ui.closeAllPanels(); return; }
+  if (near) { ui.openEnemyPanel(near); return; }
+  if (!ownField) { ui.closeAllPanels(); return; }
   const cell = corr.grid[r * game.state.grid.cols + c];
   if (cell === 2) { const tw = towerAt(corr, c, r); if (tw) { ui.openTowerPanel(corr, tw); return; } }
-  if (near) { ui.openEnemyPanel(near); return; }
   if (cell === 0) { game.buildSpot = findBuildSpot(game.state, fieldId(), corr.index, c, r); ui.openBuildMenu(corr, { c, r }); return; }
   ui.closeAllPanels();
 }
@@ -388,11 +436,12 @@ function boot() {
         game.autoT -= dt;
         if (game.autoT <= 0) {
           game.autoT = null;
-          if (game.autoWave && game.state && fieldPlayer().phase === "build") cmd.startWave();
+          if (game.autoWave && game.state && myPlayer().phase === "build") cmd.startWave();
         }
       }
+      botTick(); // versus NPCs act on wall-clock cadence
     },
-    getSpeed: () => game.gameMode === "solo" ? game.speed : ((game.state && game.state.netSpeed) || 1),
+    getSpeed: () => localSimMode() ? game.speed : ((game.state && game.state.netSpeed) || 1),
     onRender: (alpha) => { if (game.screen === "game") renderer.render(view, alpha); },
     isRunning: () => {
       if (game.screen !== "game" || game.paused) return false;
@@ -427,11 +476,12 @@ function bindUI() {
   document.querySelectorAll("[data-pacing]").forEach((b) => b.onclick = () => { setup.pacing = b.dataset.pacing; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
   document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => {
     if (game.mpHosting) { ui.toast("Match type is set by the room"); return; }
-    const mp = b.dataset.gamemode !== "solo";
+    const mp = b.dataset.gamemode === "coop" || b.dataset.gamemode === "competitive"; // versus is offline
     if (mp && lobbyPlayerCount() < 2) { ui.toast("Join a multiplayer room with another player first."); return; }
     setup.gameMode = b.dataset.gamemode;
+    if (setup.gameMode === "versus" && setup.corridors < 3) setup.corridors = 4;
+    ui.renderSetup(setup, DB.availableElements(meta.mastery));
     updateGameModeButtons();
-    ui.updateSetupDescs(setup);
   });
   document.querySelectorAll("[data-fps]").forEach((b) => b.onclick = () => { if (loop) loop.setRenderFps(+b.dataset.fps); document.querySelectorAll("[data-fps]").forEach((x) => x.classList.toggle("sel", x === b)); ui.toast("Render rate: " + b.dataset.fps + " fps"); });
   // audio controls (pause menu)
@@ -439,28 +489,29 @@ function bindUI() {
   const volSlider = $("audio-vol");
   if (volSlider) volSlider.oninput = () => { audioPref.vol = (+volSlider.value || 0) / 100; if (audioPref.vol > 0) audioPref.muted = false; saveAudioPref(); applyAudioPref(); };
   bind("btn-world", () => setView("world"));
-  bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + fieldPlayer().corridorCount) % fieldPlayer().corridorCount));
-  bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % fieldPlayer().corridorCount));
+  bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + corridorNavCount()) % corridorNavCount()));
+  bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % corridorNavCount()));
   bind("quick-start-wave", () => { game.autoT = null; cmd.startWave(); });
   // auto wave-start lock: never press "Start Wave" again (end boss stays manual)
   bind("quick-auto-wave", () => {
     game.autoWave = !game.autoWave;
     if (!game.autoWave) game.autoT = null;
-    else if (game.state && fieldPlayer().phase === "build") game.autoT = 5;
+    else if (game.state && myPlayer().phase === "build") game.autoT = 5;
     refreshAutoBtn();
     ui.toast(game.autoWave ? "Auto wave-start ON — waves begin 5s after a clear" : "Auto wave-start OFF");
   });
   bind("quick-speed-cycle", () => {
-    if (game.gameMode === "solo") { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); }
+    if (localSimMode()) { game.speed = game.speed >= 3 ? 1 : game.speed + 1; ui.updateWavePanel(); }
     else if (game.lobby && game.lobby.host) { const ns = ((game.state.netSpeed || 1) >= 3) ? 1 : (game.state.netSpeed || 1) + 1; emit(C.setSpeed(game.me, ns)); ui.toast("Speed \u2192 \u00D7" + ns); }
     else ui.toast("Only the host can change speed");
   });
+  bind("btn-send-panel", () => ui.toggleSendPanel());
   bind("btn-settings-ingame", () => togglePause(true));
   bind("pause-resume", () => togglePause(false));
-  bind("pause-restart", () => { if (game.gameMode !== "solo") { ui.toast("Restart is solo only"); return; } togglePause(false); startRun({ mode: game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", pacing: game.autoWave ? "auto" : "manual", elements: game.state.players[game.me].elements }); });
+  bind("pause-restart", () => { if (!localSimMode()) { ui.toast("Restart is offline only"); return; } togglePause(false); startRun(rematchCfg()); });
   bind("pause-save", () => { autosave(); ui.toast("Run saved to this device"); });
   bind("pause-exit", () => { togglePause(false); showScreen("menu"); refreshMenu(); });
-  bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun({ mode: game.mode === "endless" ? "loop" : game.mode, corridors: game.state.players[game.me].corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", pacing: game.autoWave ? "auto" : "manual", elements: game.state.players[game.me].elements }); });
+  bind("end-again", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); startRun(rematchCfg()); });
   bind("end-menu", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); showScreen("menu"); refreshMenu(); });
   bind("end-endless", () => { const sc = $("end-screen"); if (sc) sc.classList.remove("show"); game.state.players[game.me].phase = "build"; game.state.mode = "endless"; game.mode = "endless"; ui.updateTopBar(); ui.updateWavePanel(); ui.toast("Endless Mode!"); });
   // ---- Save / Import / Export ----
@@ -492,16 +543,22 @@ function bindUI() {
     if (e.key === " ") { e.preventDefault(); cmd.startWave(); }
     else if (e.key === "Escape") togglePause();
     else if (e.key.toLowerCase() === "w") setView("world");
-    else if (game.gameMode === "solo" && (e.key === "1" || e.key === "2" || e.key === "3")) { game.speed = +e.key; ui.updateWavePanel(); }
+    else if (localSimMode() && (e.key === "1" || e.key === "2" || e.key === "3")) { game.speed = +e.key; ui.updateWavePanel(); }
   });
 }
 function bind(id, fn) { const e = $(id); if (e) e.onclick = fn; }
+// config for "Play Again" / "Restart" that survives versus mode
+function rematchCfg() {
+  const pacing = game.autoWave ? "auto" : "manual";
+  if (isVersus()) return { mode: "endless", corridors: game.state.players.length, economy: "shared", status: game.state.statusMode, gameMode: "versus", pacing, elements: [myPlayer().elements[0]] };
+  return { mode: game.mode === "endless" ? "loop" : game.mode, corridors: myPlayer().corridorCount, economy: game.state.economy, status: game.state.statusMode, gameMode: "solo", pacing, elements: myPlayer().elements };
+}
 function lobbyPlayerCount() { return (game.lobby && game.lobby.room && game.lobby.room.players) ? Object.keys(game.lobby.room.players).length : 0; }
 function updateGameModeButtons() {
   const enabled = lobbyPlayerCount() >= 2;
   const locked = !!game.mpHosting; // match type fixed once configuring
   document.querySelectorAll("[data-gamemode]").forEach((b) => {
-    const mp = b.dataset.gamemode !== "solo";
+    const mp = b.dataset.gamemode === "coop" || b.dataset.gamemode === "competitive"; // versus is offline
     b.classList.toggle("disabled", locked || (mp && !enabled));
     b.classList.toggle("sel", b.dataset.gamemode === setup.gameMode);
   });
@@ -510,7 +567,7 @@ function togglePause(force) {
   const o = $("pause-overlay");
   const want = force != null ? force : !(o && o.classList.contains("show"));
   if (o) o.classList.toggle("show", want);
-  if (game.gameMode === "solo") game.paused = want; // multiplayer: never pause the shared sim
+  if (localSimMode()) game.paused = want; // multiplayer: never pause the shared sim
 }
 
 function fieldBottomInset() {
@@ -677,16 +734,81 @@ function startMultiplayerMatch(match) {
 function showBanner(msg) { const b = $("mp-banner"); if (b) { b.textContent = msg; b.classList.add("show"); } }
 function hideBanner() { const b = $("mp-banner"); if (b) b.classList.remove("show"); }
 
-let sendBtn = null;
+// ---- send panel toggle (competitive + versus) ------------------------------
 function setupSendButton() {
-  const wrap = $("quick-wave-controls"); if (!wrap) return;
-  if (!sendBtn) { sendBtn = document.createElement("button"); sendBtn.id = "mp-send"; sendBtn.className = "btn"; sendBtn.textContent = "⚔ Send"; sendBtn.onclick = doSend; wrap.appendChild(sendBtn); }
-  sendBtn.style.display = (game.gameMode === "competitive") ? "" : "none";
+  const b = $("btn-send-panel"); if (!b) return;
+  b.style.display = (game.gameMode === "competitive" || game.gameMode === "versus") ? "" : "none";
 }
-function doSend() {
-  if (game.gameMode !== "competitive" || !game.state) return;
-  const n = game.state.players.length;
-  for (let i = 1; i < n; i++) { const idx = (game.me + i) % n; if (game.state.players[idx].alive) { cmd.send(idx, "grunt"); ui.toast("Sent a grunt to Player " + (idx + 1)); return; } }
+
+// ---------------------------------------------------------------------------
+// NPC BOTS (versus mode) — live entirely in the shell: they only ever emit
+// COMMANDS into the same driver as the human, so the sim stays pure (§2).
+// ---------------------------------------------------------------------------
+let bots = [];
+function setupBots() {
+  bots = [];
+  if (!isVersus() || !game.state) return;
+  for (let i = 1; i < game.state.players.length; i++) {
+    bots.push({ id: i, nextAt: game.clock + 1.5 + i * 0.5 });
+  }
+}
+function botTick() {
+  if (!isVersus() || !game.state || game.state.finished) return;
+  for (const b of bots) {
+    if (game.clock < b.nextAt) continue;
+    b.nextAt = game.clock + 1.1 + Math.random() * 0.9;
+    botAct(b);
+  }
+}
+function botAct(b) {
+  const st = game.state, pl = st.players[b.id];
+  if (!pl || !pl.alive) return;
+  const corr = pl.corridors[0];
+  const q = (c) => game.driver.queue(c);
+  const wave = Math.max(1, pl.wave);
+  const reserve = 30 + wave * 6;
+
+  // 1) build up defenses toward a wave-scaled tower count
+  const want = Math.min(12, 2 + Math.ceil(wave * 0.6));
+  if (corr.towers.length < want) {
+    const options = DB.TOWERS.filter((t) => t.element === corr.element && t.cost <= pl.gold - 20);
+    if (options.length) {
+      const t = options[Math.floor(Math.random() * options.length)];
+      const G = st.grid;
+      const gx = 3 + Math.floor(Math.random() * (G.cols - 6));
+      const gy = 5 + Math.floor(Math.random() * (G.rows - 10));
+      q(C.buildTower(b.id, 0, gx, gy, t.id, 5));
+      return;
+    }
+  }
+  // 2) upgrade or mutate an existing tower
+  if (corr.towers.length && Math.random() < 0.5) {
+    const tw = corr.towers[Math.floor(Math.random() * corr.towers.length)];
+    if (tw.level < DB.CONFIG.maxLevel) {
+      const cost = Math.round(tw.def.cost * DB.SCALING.upgradeCostBase * Math.pow(DB.SCALING.costGrowth, tw.level - 1));
+      if (pl.gold > cost + reserve) { q(C.upgradeTower(b.id, 0, tw.id)); return; }
+    } else if (tw.mutations.length < 2 && tw.def.mutations.length) {
+      const m = tw.def.mutations[Math.floor(Math.random() * tw.def.mutations.length)];
+      q(C.mutateTower(b.id, 0, tw.id, m.id, 5)); return;
+    }
+  }
+  // 3) aggression: upgrade send tiers, then send the strongest affordable mob
+  if (corr.towers.length >= 3 && wave >= 2) {
+    const types = Object.keys(DB.SENDS);
+    if (Math.random() < 0.25) {
+      const t = types[Math.floor(Math.random() * types.length)];
+      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
+      if (lvl < DB.SEND_MAX_LEVEL && pl.gold > DB.sendUpgradeCost(t, lvl) + reserve * 2) { q(C.upgradeSend(b.id, t)); return; }
+    }
+    const budget = pl.gold - reserve * 2;
+    let bestT = null, bestC = 0;
+    for (const t of types) {
+      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
+      const c = DB.sendCost(t, lvl);
+      if (c <= budget && c > bestC) { bestC = c; bestT = t; }
+    }
+    if (bestT && Math.random() < 0.6) q(C.sendEnemy(b.id, 0, bestT)); // target: sim picks next corridor
+  }
 }
 
 function preventBrowserGestures() {
