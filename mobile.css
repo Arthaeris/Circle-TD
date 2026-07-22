@@ -83,6 +83,16 @@ html, body, #app {
 #render-fps-row { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 8px; }
 #render-fps-row .btn { min-height: 40px; min-width: 56px; }
 
+/* Audio controls in the pause overlay (mute + volume). */
+#audio-row { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 8px; }
+#audio-row .btn { min-height: 40px; min-width: 76px; }
+#audio-row input[type="range"] { flex: 1; max-width: 140px; accent-color: #ffd23d; min-height: 40px; }
+
+/* Belt-and-braces: interactive elements never trigger double-tap zoom, even if
+   an ancestor's touch-action ever changes. (Replaces the old global touchend
+   double-tap suppression in app/main.js, which also ate rapid game taps.) */
+button, .btn, .chip, .nav-btn, .elbtn, .build-card, .mut-card, input[type="range"] { touch-action: manipulation; }
+
 /* Reduce motion when the OS asks for it (helps long sessions / sensitivity). */
 @media (prefers-reduced-motion: reduce) {
   #transition .cloud { transition: none !important; }
