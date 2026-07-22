@@ -622,6 +622,23 @@ body {
 .wprev-label.boss, .wprev-item.boss { color: var(--bad, #ff4d6d); font-weight: 700; }
 .wprev-item { white-space: nowrap; }
 .wprev-sep { margin: 0 5px; opacity: .5; }
+.wprev-affix { margin-left: 6px; padding: 1px 8px; border-radius: 8px; background: rgba(255,210,61,.15); border: 1px solid rgba(255,210,61,.5); color: var(--gold, #ffd23d); font-weight: 700; white-space: nowrap; }
+
+/* auto wave-start toggle */
+#quick-auto-wave.on { border-color: var(--gold, #ffd23d); color: var(--gold, #ffd23d); background: rgba(255,210,61,.12); }
+
+/* boss HP bar (top of game stage while a boss is alive) */
+#boss-bar {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  width: min(420px, 86%); z-index: 22; display: none; pointer-events: none;
+  background: rgba(10,12,28,.85); border: 1px solid rgba(255,255,255,.18);
+  border-radius: 10px; padding: 6px 10px 8px;
+}
+#boss-bar.show { display: block; }
+#boss-bar.end { border-color: #ff2e7e; box-shadow: 0 0 18px rgba(255,46,126,.35); }
+#boss-name { display: block; font-size: 12px; font-weight: 800; letter-spacing: .5px; margin-bottom: 4px; text-align: center; }
+#boss-bar .bb-track { height: 8px; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; }
+#boss-fill { height: 100%; width: 100%; border-radius: 4px; background: linear-gradient(90deg, #ff4d6d, #ff2e7e); transition: width .2s; }
 
 #quick-start-wave {
   min-width: 160px;
@@ -718,6 +735,40 @@ body {
 #screen-flash.flash { animation: flashfade .2s; }
 @keyframes flashfade { from { opacity: .35; } to { opacity: 0; } }
 
+/* build card extras: synergy hint */
+.bc-syn { font-size: 11px; color: var(--gold, #ffd23d); margin-top: 2px; }
+
+/* tower panel: targeting mode row */
+.tp-target { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
+.tp-target .tt-lbl { font-size: 12px; color: var(--dim); margin-right: 2px; }
+.tm-btn {
+  flex: 1; min-height: 34px; border-radius: 8px; border: 1px solid rgba(255,255,255,.15);
+  background: rgba(255,255,255,.06); color: var(--ink); font-family: var(--font);
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.tm-btn.sel { border-color: var(--ec, #fff); box-shadow: 0 0 0 1px var(--ec, #fff) inset; color: var(--ec, #fff); }
+
+/* tower panel: synergy block */
+.tp-syn { margin: 8px 0; padding: 8px 10px; background: rgba(0,0,0,.2); border-radius: 10px; }
+.tp-syn-head { font-size: 12px; font-weight: 800; color: var(--gold, #ffd23d); margin-bottom: 4px; }
+.tp-syn-row { font-size: 11px; color: var(--dim); line-height: 1.5; margin-bottom: 3px; }
+.tp-syn-row b { color: var(--ink); }
+
+/* enemy panel: loop adaptations */
+.ep-adapt-head { font-size: 12px; font-weight: 700; color: var(--gold, #ffd23d); margin-top: 8px; }
+
+/* synergy codex (mastery screen) */
+.codex-head { margin: 20px 0 4px; }
+.codex-note { font-size: 12px; margin: 0 0 10px; }
+.codex-list { display: flex; flex-direction: column; gap: 6px; }
+.codex-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  background: rgba(0,0,0,.2); border-radius: 10px; padding: 8px 12px;
+}
+.cx-combo { font-size: 13px; font-weight: 700; min-width: 180px; }
+.cx-name { font-size: 13px; font-weight: 800; }
+.cx-eff { font-size: 12px; color: var(--dim); flex: 1 1 100%; }
+
 /* ----------------------------- toast ----------------------------- */
 /* #toast is a stacking container; each message is its own .toast-msg child. */
 #toast {
@@ -774,6 +825,8 @@ body {
 #mastery-screen .modal, #mastery-screen { }
 /* mastery screen uses modal-overlay base; give it inner card */
 #mastery-screen { padding: 16px; }
+/* scrollable column so the synergy codex below the grid stays reachable */
+#mastery-screen.show { flex-direction: column; align-items: stretch; justify-content: flex-start; overflow-y: auto; }
 #mastery-screen { }
 
 /* save modal */
