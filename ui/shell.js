@@ -8,6 +8,7 @@
  * display only). In-game text is English (per request).
  * ===========================================================================*/
 import * as fx from "../sim/fx.js";
+import { generateWave } from "../sim/waves.js";
 
 const $ = (id) => document.getElementById(id);
 const toI = (v) => fx.toInt(v);
@@ -20,8 +21,17 @@ export function createUI(opts) {
   const getMeta = opts.getMeta || (() => ({ mastery: {}, elementWins: {} }));
   let _twSig = null; // tower-panel content signature (avoid rebuilding every refresh)
 
-  let toastT = null;
-  function toast(msg) { const t = $("toast"); if (!t) return; t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
+  // Stacked toast queue: consecutive messages no longer overwrite each other.
+  // #toast is a container; each message is a child that fades out on its own.
+  const TOAST_MAX = 3, TOAST_MS = 2600;
+  function toast(msg) {
+    const t = $("toast"); if (!t) return;
+    while (t.children.length >= TOAST_MAX) t.removeChild(t.firstChild);
+    const m = document.createElement("div"); m.className = "toast-msg"; m.textContent = msg;
+    t.appendChild(m);
+    requestAnimationFrame(() => m.classList.add("show"));
+    setTimeout(() => { m.classList.remove("show"); setTimeout(() => m.remove(), 300); }, TOAST_MS);
+  }
   function setText(id, t) { const e = $(id); if (e) e.textContent = t; }
 
   function closeAllPanels() {
@@ -64,6 +74,29 @@ export function createUI(opts) {
     const b = $("quick-start-wave");
     if (b) { b.textContent = label; b.classList.toggle("disabled", pl.phase === "endboss"); }
     const sb = $("quick-speed-cycle"); if (sb) sb.textContent = "×" + v.speed;
+    updateWavePreview();
+  }
+
+  // ---- next-wave preview (display-only; mirrors deterministic generateWave) --
+  function updateWavePreview() {
+    const wp = $("wave-preview"); if (!wp) return;
+    const v = getView(), pl = v.field;
+    let html = "";
+    if (pl.phase === "build" && (v.state.mode === "endless" || pl.wave < pl.totalWaves)) {
+      const next = pl.wave + 1;
+      const isBoss = next % DB.CONFIG.bossEvery === 0;
+      const agg = {};
+      for (const g of generateWave(next, pl.corridorCount, DB.CONFIG.bossEvery)) agg[g.type] = (agg[g.type] || 0) + g.count;
+      const parts = Object.keys(agg).map((t) => {
+        const d = DB.ENEMIES[t] || { name: t };
+        return `<span class="wprev-item${d.boss ? " boss" : ""}">${agg[t]}× ${d.name}</span>`;
+      });
+      html = `<span class="wprev-label${isBoss ? " boss" : ""}">${isBoss ? "⚠ Boss Wave " + next + ":" : "Next:"}</span> ${parts.join('<span class="wprev-sep">·</span>')}`;
+    } else if (pl.phase === "prep") {
+      html = `<span class="wprev-label boss">⚠ Final:</span> <span class="wprev-item boss">1× ${(DB.ENEMIES.endboss && DB.ENEMIES.endboss.name) || "End Boss"}</span>`;
+    }
+    wp.innerHTML = html;
+    wp.classList.toggle("show", !!html);
   }
 
   // ---- build menu ----------------------------------------------------------
@@ -101,6 +134,7 @@ export function createUI(opts) {
     const expPct = tw.expert < 5 ? Math.min(1, tw.kills / expNeed) : 1;
     const cur = towerView(def, tw.level, tw.expert);
     const nxt = maxed ? null : towerView(def, tw.level + 1, tw.expert);
+    const refund = sellRefund(def, tw.level);
     let html = `<button class="panel-close" id="tp-close">✕</button>
       <div class="tp-head" style="--ec:${el.color}"><span class="tp-icon">${el.icon}</span><div><div class="tp-name">${def.name}</div><div class="tp-sub">${el.name} · ${def.archetype}</div></div></div>
       <div class="tp-levels"><span class="badge">Lv ${tw.level}/10</span><span class="badge gold">Expert ${tw.expert}/5</span></div>
@@ -114,7 +148,7 @@ export function createUI(opts) {
       </div>
       <div class="tp-actions">
         <button id="tp-upgrade" class="${maxed ? "disabled" : ""}">${maxed ? "MAX LEVEL" : "Upgrade · " + cost}</button>
-        <button id="tp-sell" class="sell">Sell</button>
+        <button id="tp-sell" class="sell">Sell · +${refund}</button>
       </div>`;
     if (maxed) {
       html += `<div class="tp-mut-head">Mutations ${slots ? `(${tw.mutations.length}/${slots} slots)` : "(locked — raise Mastery)"}</div><div class="tp-muts">`;
@@ -129,6 +163,13 @@ export function createUI(opts) {
     _twSig = tw.level + "/" + tw.expert + "/" + tw.kills + "/" + tw.mutations.length;
   }
   function statRow(label, val, next) { return `<div class="stat-row"><span>${label}</span><span>${val}${(next != null && String(next) !== String(val)) ? ` <em>\u2192 ${next}</em>` : ""}</span></div>`; }
+  // display-only sell value (mirrors core totalInvested * sellRefund)
+  function sellRefund(def, level) {
+    const S = DB.SCALING;
+    let invested = def.cost;
+    for (let l = 1; l < level; l++) invested += Math.round(def.cost * S.upgradeCostBase * Math.pow(S.costGrowth, l - 1));
+    return Math.round(invested * DB.CONFIG.sellRefund);
+  }
   // display-only stat projection (mirrors core scaling: per-level + expert bonus)
   function towerView(def, level, expert) {
     const S = DB.SCALING, C = DB.CONFIG;
@@ -171,7 +212,35 @@ export function createUI(opts) {
   }
 
   // ---- setup screen --------------------------------------------------------
+  // One-line explanations shown under each option group (updates with selection).
+  const SETUP_DESCS = {
+    mode: {
+      single: "One corridor, 10 waves. A short, focused run.",
+      loop: "Corridors form a ring — enemies that survive a corridor move on to the next and loop back around until destroyed. 10 waves per corridor.",
+      endless: "No final wave. Survive and climb as long as you can.",
+    },
+    gamemode: {
+      solo: "Play alone on your own battlefield.",
+      coop: "Defend one shared battlefield and life pool together. Requires a multiplayer room.",
+      competitive: "Separate battlefields — spend resources to send extra enemies at your rival. Requires a multiplayer room.",
+    },
+    econ: {
+      shared: "One gold pool pays for every tower, across all corridors.",
+      elemental: "Each element earns and spends its own essence — kills pay out in the corridor's element.",
+    },
+    status: {
+      standard: "Enemies carry one status effect at a time — a new one replaces the old.",
+      advanced: "Status effects from different towers stack and combine; enemies lock their statuses after each full loop.",
+    },
+  };
+  function updateSetupDescs(setup) {
+    setText("desc-mode", SETUP_DESCS.mode[setup.mode] || "");
+    setText("desc-gamemode", SETUP_DESCS.gamemode[setup.gameMode] || "");
+    setText("desc-econ", SETUP_DESCS.econ[setup.economy] || "");
+    setText("desc-status", SETUP_DESCS.status[setup.status] || "");
+  }
   function renderSetup(setup, availElements) {
+    updateSetupDescs(setup);
     document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("sel", b.dataset.mode === setup.mode));
     const cc = $("corridor-buttons");
     if (cc && !cc.dataset.built) {
@@ -269,7 +338,7 @@ export function createUI(opts) {
     if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
+  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
 }
 
 export default { createUI };
