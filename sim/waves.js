@@ -42,4 +42,28 @@ export function totalWaves(mode, corridorCount) {
   return corridorCount * 10;
 }
 
-export default { generateWave, enemyScale, totalWaves };
+// ---------------------------------------------------------------------------
+// WAVE AFFIXES — seeded per-run modifiers for variety.
+// Pure integer hash of (seedBase, wave): identical on every client, no draw
+// from the sim RNG stream (so existing replays/lockstep ticks are unaffected).
+// Stat multipliers are authored floats; the core converts via fromFloat once
+// at spawn (deterministic).
+// ---------------------------------------------------------------------------
+export const AFFIXES = {
+  swift:    { id: "swift",    name: "Swift",    icon: "💨", desc: "+30% speed",            speedMult: 1.3 },
+  armored:  { id: "armored",  name: "Armored",  icon: "🛡️", desc: "+5 armor",              armorAdd: 5 },
+  vigorous: { id: "vigorous", name: "Vigorous", icon: "🩸", desc: "+35% health",           hpMult: 1.35 },
+  horde:    { id: "horde",    name: "Horde",    icon: "👥", desc: "+40% count, −25% health", countMult: 1.4, hpMult: 0.75 },
+};
+const AFFIX_ORDER = ["swift", "armored", "vigorous", "horde"];
+
+export function waveAffix(seedBase, wave, bossEvery) {
+  if (wave < 5 || wave % bossEvery === 0) return null;   // never on early or boss waves
+  let h = ((seedBase | 0) ^ Math.imul(wave | 0, 2654435761)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0;
+  h ^= h >>> 13;
+  if (h % 3 !== 0) return null;                          // ~1 in 3 eligible waves
+  return AFFIXES[AFFIX_ORDER[(h >>> 4) % AFFIX_ORDER.length]];
+}
+
+export default { generateWave, enemyScale, totalWaves, waveAffix, AFFIXES };
