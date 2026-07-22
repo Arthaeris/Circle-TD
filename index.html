@@ -99,6 +99,14 @@
             </div>
             <p class="setup-desc" id="desc-status"></p>
           </div>
+          <div class="setup-section">
+            <h3>Wave Pacing</h3>
+            <div class="row">
+              <button class="chip" data-pacing="manual">Manual</button>
+              <button class="chip" data-pacing="auto">Auto-Start</button>
+            </div>
+            <p class="setup-desc" id="desc-pacing"></p>
+          </div>
         </div>
         <div class="setup-right">
           <div class="preview-box"><canvas id="preview-canvas"></canvas></div>
@@ -122,6 +130,7 @@
     </div>
     <div id="game-stage">
       <canvas id="game-canvas"></canvas>
+      <div id="boss-bar"><span id="boss-name"></span><div class="bb-track"><div id="boss-fill"></div></div></div>
       <div id="transition"><div class="cloud left"></div><div class="cloud right"></div></div>
       <div id="screen-flash"></div>
       <div id="enemy-overview" class="overlay-panel"></div>
@@ -140,6 +149,7 @@
     <div id="quick-wave-controls">
       <div id="wave-preview"></div>
       <button id="quick-start-wave" class="btn primary">▶ Start Wave</button>
+      <button id="quick-auto-wave" class="btn ghost" aria-label="Toggle automatic wave start">⟳ Auto</button>
       <button id="quick-speed-cycle" class="btn ghost">×1</button>
     </div>
     <div id="pause-overlay" class="modal-overlay">
