@@ -87,8 +87,10 @@ export function createState(bal, cfg) {
       corridors: [],
       endBossId: 0,
       stats: { kills: 0, bossesKilled: 0, score: 0 },
+      sendLevels: {},                      // per-type send level (competitive/versus)
     };
     for (const e of bal.elementOrder) player.essence[e] = bal.startEssence;
+    for (const t in bal.sends) player.sendLevels[t] = 1;
 
     const buildField = !((cfg.gameMode === "coop") && pi > 0); // co-op: one shared field on player 0
     for (let i = 0; buildField && i < pc.corridorCount; i++) {
@@ -184,6 +186,7 @@ function applyCommand(state, cmd) {
     case "StartWave":    cmdStartWave(state, pl, cmd); break;
     case "SendEnemy":    cmdSendEnemy(state, pl, cmd); break;
     case "SetTargetMode": cmdSetTargetMode(state, pl, cmd); break;
+    case "UpgradeSend":  cmdUpgradeSend(state, pl, cmd); break;
     case "SetSpeed":     if (cmd.player === 0) { const sp = cmd.speed | 0; state.netSpeed = sp < 1 ? 1 : (sp > 3 ? 3 : sp); } break;
     case "Ack":          break; // heartbeat, no state change
   }
@@ -269,7 +272,17 @@ function cmdSetTargetMode(state, pl, cmd) {
 }
 
 function cmdStartWave(state, pl, cmd) {
-  const fp = fieldOwner(state, pl); // co-op: the single shared field
+  // Versus: waves are synchronized — the human seat (player 0) starts the wave
+  // for EVERY living corridor at once, so all seats face equal PvE pressure.
+  if (state.gameMode === "versus") {
+    if (pl.id !== 0) return;
+    for (const p of state.players) if (p.alive) queueWaveFor(state, p);
+    return;
+  }
+  queueWaveFor(state, fieldOwner(state, pl)); // co-op: the single shared field
+}
+
+function queueWaveFor(state, fp) {
   if (fp.phase === "prep") { summonEndBoss(state, fp); return; }
   if (fp.phase === "victory" || fp.phase === "defeat" || fp.phase === "endboss") return;
   if (state.mode !== "endless" && fp.wave >= fp.totalWaves) return;
@@ -302,30 +315,53 @@ function cmdStartWave(state, pl, cmd) {
   state.events.push({ kind: "wave", player: fp.id, wave: fp.wave, boss: (fp.wave % state.bal.bossEvery === 0), affix: affix ? affix.id : null });
 }
 
-// Competitive: spend gold to spawn extra enemies on a target, builds income (§8).
+// Next living player after `id` in ring order (versus send/leak direction).
+function nextAliveAfter(state, id) {
+  for (let i = 1; i < state.players.length; i++) {
+    const p = state.players[(id + i) % state.players.length];
+    if (p.alive) return p;
+  }
+  return null;
+}
+
+// Competitive/versus: spend gold to spawn extra enemies on a target.
+// FLAT cost per type+level; upgrading the type (cmdUpgradeSend) raises both
+// cost and strength. Sending builds passive income proportional to gold spent.
 function cmdSendEnemy(state, pl, cmd) {
-  if (state.gameMode !== "competitive") return;
-  const target = state.players[cmd.target];
+  if (state.gameMode !== "competitive" && state.gameMode !== "versus") return;
+  // versus: sends always go to the NEXT living corridor in ring order
+  const target = state.gameMode === "versus" ? nextAliveAfter(state, pl.id) : state.players[cmd.target];
   if (!target || !target.alive || target === pl) return;
   const comp = state.bal.competitive;
-  // rising send cost (§8.3): base * growth^sentCount  (does NOT raise defender bounty)
-  let cost = comp.sendBaseCost;
-  let growth = fx.ONE;
-  for (let i = 0; i < pl.sentCount; i++) growth = fx.mul(growth, comp.sendCostGrowth);
-  cost = fx.round(fx.mul(fx.fromInt(comp.sendBaseCost), growth));
-  if (!canAfford(state, pl, cost, pl.elements[0])) return;
+  const type = cmd.enemyType || "grunt";
+  const send = state.bal.sends[type]; if (!send) return;
+  const lvl = (pl.sendLevels && pl.sendLevels[type]) || 1;
+  const cost = send.cost[lvl - 1];
+  if (!canAfford(state, pl, cost, pl.elements[0])) { state.events.push({ kind: "reject", player: pl.id, reason: "funds" }); return; }
   // cap on concurrent sent enemies per target (§8.3)
   let activeSent = 0;
   for (const e of state.enemies) if (e.owner === target.id && e.sent) activeSent++;
   if (activeSent >= comp.maxActiveSentPerTarget) return;
 
   spend(state, pl, cost, pl.elements[0]);
-  pl.sentCount++;
-  pl.income += comp.incomePerSend;          // §8.1 sending builds passive income
-  const type = cmd.enemyType || "grunt";
-  const origin = rng.nextInt(state.seedSim, target.corridorCount);
-  spawnEnemy(state, target, type, origin, target.wave || 1, true);
-  state.events.push({ kind: "sent", from: pl.id, to: target.id, type });
+  pl.sentCount += send.count;
+  pl.income += Math.max(1, Math.round(cost * comp.incomeRate)); // §8.1 income scales with gold sent
+  const origin = state.gameMode === "versus" ? 0 : rng.nextInt(state.seedSim, target.corridorCount);
+  for (let k = 0; k < send.count; k++)
+    target.spawnQueue.push({ type, origin, atTick: state.tick + k * 8, sent: true, sendLevel: lvl, wave: target.wave });
+  state.events.push({ kind: "sent", from: pl.id, to: target.id, type, level: lvl, count: send.count });
+}
+
+function cmdUpgradeSend(state, pl, cmd) {
+  if (state.gameMode !== "competitive" && state.gameMode !== "versus") return;
+  const send = state.bal.sends[cmd.enemyType]; if (!send) return;
+  const lvl = (pl.sendLevels && pl.sendLevels[cmd.enemyType]) || 1;
+  if (lvl >= send.maxLevel) return;
+  const cost = send.upgradeCost[lvl - 1];
+  if (!canAfford(state, pl, cost, pl.elements[0])) { state.events.push({ kind: "reject", player: pl.id, reason: "funds" }); return; }
+  spend(state, pl, cost, pl.elements[0]);
+  pl.sendLevels[cmd.enemyType] = lvl + 1;
+  state.events.push({ kind: "sendLevel", player: pl.id, type: cmd.enemyType, level: lvl + 1 });
 }
 
 function unlockedTowerSlots(masteryLevel) {
@@ -412,25 +448,33 @@ function updateSpawns(state) {
     for (const s of pl.spawnQueue) {
       // spawn with the wave the enemy was queued FOR (matters when waves
       // overlap via early calls), falling back to the field's current wave
-      if (state.tick >= s.atTick) spawnEnemy(state, pl, s.type, s.origin, s.wave || pl.wave, false);
+      if (state.tick >= s.atTick) spawnEnemy(state, pl, s.type, s.origin, s.wave || pl.wave, !!s.sent, s.sendLevel || 1);
       else remaining.push(s);
     }
     pl.spawnQueue = remaining;
   }
 }
 
-function spawnEnemy(state, pl, type, origin, wave, sent) {
+function spawnEnemy(state, pl, type, origin, wave, sent, sendLevel) {
   const def = state.bal.enemies[type]; if (!def) return;
   const sc = enemyScale(Math.max(1, wave));
   const corr = pl.corridors[origin];
   let maxHp = fx.mul(def.hp, sc.hp);
   let armor = def.armor, baseSpeed = def.speed;
+  let reward = Math.round(def.reward * (sc.reward / fx.ONE));
   // wave affix (never on bosses or sent enemies; pure function of seed+wave)
   const affix = (!def.boss && !sent) ? waveAffix(state.seedBase, wave, state.bal.bossEvery) : null;
   if (affix) {
     if (affix.hpMult) maxHp = fx.mul(maxHp, F(affix.hpMult));
     if (affix.armorAdd) armor += fx.fromInt(affix.armorAdd);
     if (affix.speedMult) baseSpeed = fx.mul(baseSpeed, F(affix.speedMult));
+  }
+  // send level scaling (flat-cost economy: strength comes from the level)
+  const send = sent && state.bal.sends[type];
+  if (send && sendLevel > 1) {
+    const li = Math.min(sendLevel, send.maxLevel) - 1;
+    maxHp = fx.mul(maxHp, send.hpMult[li]);
+    reward = Math.round(reward * (send.rewardMult[li] / fx.ONE));
   }
   const e = {
     id: state.nextId++, type, def,
@@ -439,7 +483,8 @@ function spawnEnemy(state, pl, type, origin, wave, sent) {
     fy: fx.fromInt(corr.entrance.r) + HALF,
     maxHp, hp: maxHp,
     armor, baseSpeed,
-    reward: Math.round(def.reward * (sc.reward / fx.ONE)),
+    reward,
+    sendLevel: sent ? (sendLevel || 1) : 0,
     statuses: {}, statusKeys: [], buffs: 0,
     loopCount: 0, transitions: 0,
     alive: true, boss: def.boss, end: def.end,
@@ -520,6 +565,7 @@ function moveAlongFlow(state, e, corr, stepFx) {
 }
 
 function transferEnemy(state, e) {
+  if (state.gameMode === "versus") { transferEnemyVersus(state, e); return; }
   const pl = state.players[e.owner];
   const from = e.corridorIndex;
   const next = (from + 1) % pl.corridorCount;
@@ -534,6 +580,34 @@ function transferEnemy(state, e) {
 
   if (e.transitions % pl.corridorCount === 0) onLoopComplete(state, pl, e);
   if (state.statusMode === "advanced" && e.transitions % pl.corridorCount === 0) e.statusLocked = false;
+}
+
+// Versus (Line-Tower-Wars-around-a-circle): each corridor belongs to a seat.
+// A leak costs the corridor's owner a life, then the mob adapts and marches on
+// to the NEXT living corridor. Dead corridors are skipped entirely.
+function transferEnemyVersus(state, e) {
+  const owner = state.players[e.owner];
+  loseLife(state, owner, state.bal.loopLifeLoss);
+  state.events.push({ kind: "leak", player: e.owner, type: e.type });
+  const next = nextAliveAfter(state, e.owner);
+  if (!next || state.finished) { // nobody left to travel to — remove the mob
+    e.alive = false;
+    const idx = state.enemies.indexOf(e);
+    if (idx >= 0) state.enemies.splice(idx, 1);
+    return;
+  }
+  e.owner = next.id;
+  e.originIndex = 0;
+  e.corridorIndex = 0;
+  e.corr = next.corridors[0];
+  e.fx = fx.fromInt(e.corr.entrance.c) + HALF;
+  e.fy = fx.fromInt(e.corr.entrance.r) + HALF;
+  e.transitions++;
+  e.loopCount++;                       // corridors survived — shown as ↻n
+  applyAdaptation(state, e);           // travelers grow stronger each leak
+
+  const cur = e.statuses["cursed"];
+  if (cur) damageEnemy(state, e, fx.mul(cur.value, cur.curseBoost || fx.ONE), null, true);
 }
 
 function onLoopComplete(state, pl, e) {
@@ -951,7 +1025,7 @@ function impact(state, p) {
 // INCOME (competitive §8.1 + catch-up §8.3)
 // ---------------------------------------------------------------------------
 function updateIncome(state) {
-  if (state.gameMode !== "competitive") return;
+  if (state.gameMode !== "competitive" && state.gameMode !== "versus") return;
   const comp = state.bal.competitive;
   // find life leader for catch-up
   let maxLives = 0;
@@ -975,6 +1049,7 @@ function updateIncome(state) {
 function enemiesOf(state, pl) { let n = 0; for (const e of state.enemies) if (e.owner === pl.id) n++; return n; }
 
 function checkWaveState(state, pl) {
+  if (!pl.alive) return; // a defeated seat must never flip back to "build"
   if (!pl.waveActive) return;
   if (pl.spawnQueue.length === 0 && enemiesOf(state, pl) === 0) {
     pl.waveActive = false;
@@ -1012,8 +1087,8 @@ function defeat(state, pl) {
   if (pl.phase === "defeat") return;
   pl.phase = "defeat"; pl.waveActive = false; pl.alive = false;
   state.events.push({ kind: "defeat", player: pl.id });
-  // competitive: last standing wins
-  if (state.gameMode === "competitive") {
+  // competitive/versus: last standing wins
+  if (state.gameMode === "competitive" || state.gameMode === "versus") {
     const alive = state.players.filter(p => p.alive);
     if (alive.length === 1) { alive[0].phase = "victory"; state.events.push({ kind: "victory", player: alive[0].id }); }
   }
@@ -1023,6 +1098,13 @@ function maybeFinish(state) {
   if (state.gameMode === "coop") {
     const f = state.players[0].phase;
     if (f === "victory" || f === "defeat") state.finished = true;
+    return;
+  }
+  if (state.gameMode === "versus") {
+    // the match ends when the human seat is decided or one seat remains
+    const me = state.players[0];
+    const alive = state.players.filter(p => p.alive);
+    if (me.phase === "victory" || me.phase === "defeat" || alive.length <= 1) state.finished = true;
     return;
   }
   const anyOngoing = state.players.some(p => p.phase !== "victory" && p.phase !== "defeat");
