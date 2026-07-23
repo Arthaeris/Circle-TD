@@ -1,641 +1,321 @@
 /* =============================================================================
- * Circle Tower Wars — ui/shell.js
- * UI LAYER (panels, menus, HUD, toasts). Builds DOM and wires buttons to
- * COMMAND callbacks supplied by app/main.js — it never mutates sim state; user
- * intent becomes commands that flow through the (lockstep) tick layer (§2/§6).
+ * Circle Tower Wars — render/draw.js
+ * CANVAS RENDERER (shell). Reads the deterministic sim state and DRAWS it; it
+ * never mutates state (§2 boundary). Fixed-point positions are converted to
+ * float pixels only here, at the very edge. Supports render interpolation
+ * (`alpha`) so motion stays smooth at any local render fps (§4).
  *
- * Reads from the sim state to display values (fixed-point converted to ints for
- * display only). In-game text is English (per request).
+ * It draws the field of ONE player (the local player by default; the spectator
+ * can view a peer's field in multiplayer). All asset paths keep .PNG (D1) and
+ * fall back to vector drawing if an image is missing — same as the original.
  * ===========================================================================*/
 import * as fx from "../sim/fx.js";
-import { generateWave, waveAffix, AFFIXES } from "../sim/waves.js";
 
-const $ = (id) => document.getElementById(id);
-const toI = (v) => fx.toInt(v);
+const TILE = (v) => fx.toFloat(v); // fixed tiles -> float tiles
 
-export function createUI(opts) {
-  const DB = opts.DB;
-  const getView = opts.getView;       // () => view {state, me, player, view, activeCorridor, ...}
-  const cmd = opts.cmd;               // command emitters {build, sell, upgrade, mutate, startWave, send}
-  const masteryLevel = opts.masteryLevel || (() => 5);
-  const getMeta = opts.getMeta || (() => ({ mastery: {}, elementWins: {} }));
-  let _twSig = null; // tower-panel content signature (avoid rebuilding every refresh)
-  let _sendSig = null; // send-panel content signature
+export function createRenderer(opts) {
+  const canvas = opts.canvas, assets = opts.assets, DB = opts.DB;
+  let ctx = canvas.getContext("2d");
+  let dpr = 1;
 
-  // Stacked toast queue: consecutive messages no longer overwrite each other.
-  // #toast is a container; each message is a child that fades out on its own.
-  const TOAST_MAX = 3, TOAST_MS = 2600;
-  function toast(msg) {
-    const t = $("toast"); if (!t) return;
-    while (t.children.length >= TOAST_MAX) t.removeChild(t.firstChild);
-    const m = document.createElement("div"); m.className = "toast-msg"; m.textContent = msg;
-    t.appendChild(m);
-    requestAnimationFrame(() => m.classList.add("show"));
-    setTimeout(() => { m.classList.remove("show"); setTimeout(() => m.remove(), 300); }, TOAST_MS);
+  function resize() {
+    const wrap = canvas.parentElement;
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    dpr = Math.min(1.5, window.devicePixelRatio || 1);
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + "px"; canvas.style.height = h + "px";
+    ctx = canvas.getContext("2d");
   }
-  function setText(id, t) { const e = $(id); if (e) e.textContent = t; }
+  const cw = () => canvas.width / dpr;
+  const ch = () => canvas.height / dpr;
 
-  function closeAllPanels() {
-    ["build-menu", "tower-panel", "enemy-panel", "send-panel"].forEach((id) => { const e = $(id); if (e) e.classList.remove("show"); });
-    closeRing();
-    const v = getView(); v.selectedTowerId = null; v.selectedEnemyId = null; v.buildTile = null; v.buildMenuOpen = false; v.buildPreview = null;
-    _sendSig = null;
+  // ---- geometry helpers ----------------------------------------------------
+  function worldGeom() { const W = cw(), H = ch(); return { cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.34 }; }
+  // versus: one gate per SEAT; otherwise one per corridor of the viewed field
+  function worldCount(view) { return view.versus ? view.state.players.length : view.field.corridorCount; }
+  function worldCorr(view, i) { return view.versus ? view.state.players[i].corridors[0] : view.field.corridors[i]; }
+  function gatePositions(view) {
+    const g = worldGeom();
+    const pts = DB.polygonPoints(worldCount(view));
+    return pts.map((p) => ({ x: g.cx + p.x * g.R, y: g.cy + p.y * g.R }));
   }
-
-  // ---------------------------------------------------------------------------
-  // RADIAL MENUS — build & tower actions bloom around the tapped tile.
-  // Mouse: hover previews, click executes. Touch: first tap focuses/previews,
-  // second tap executes (confirm pattern). The ring lives in #radial-menu,
-  // an overlay on the game stage; anything else closes it.
-  // ---------------------------------------------------------------------------
-  let _ring = null;
-  function closeRing() {
-    const m = $("radial-menu"); if (m) { m.classList.remove("show"); m.innerHTML = ""; }
-    _ring = null;
-  }
-  function showRing(sx, sy, items, opts) {
-    const m = $("radial-menu"), stage = $("game-stage"); if (!m || !stage) return;
-    m.innerHTML = "";
-    const W = stage.clientWidth, H = stage.clientHeight, R = 78;
-    const cx = Math.max(R + 36, Math.min(W - R - 36, sx));
-    const cy = Math.max(R + 70, Math.min(H - R - 40, sy));
-    const label = document.createElement("div");
-    label.className = "rad-label";
-    label.style.left = cx + "px"; label.style.top = (cy - R - 36) + "px";
-    label.innerHTML = opts.title || "";
-    m.appendChild(label);
-    _ring = { items: {}, focus: null, label, defTitle: opts.title || "" };
-    const n = items.length;
-    items.forEach((it, i) => {
-      const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-      const b = document.createElement("button");
-      b.className = "rad-item" + (it.cls ? " " + it.cls : "");
-      if (it.color) b.style.setProperty("--ec", it.color);
-      b.style.left = (cx + Math.cos(a) * R) + "px";
-      b.style.top = (cy + Math.sin(a) * R) + "px";
-      const render = () => { b.innerHTML = typeof it.html === "function" ? it.html() : it.html; if (it.isDisabled) b.classList.toggle("cant", !!it.isDisabled()); };
-      render();
-      const focus = () => {
-        if (_ring.focus && _ring.items[_ring.focus]) _ring.items[_ring.focus].el.classList.remove("focus");
-        _ring.focus = it.key; b.classList.add("focus");
-        if (it.onFocus) it.onFocus();
-        label.innerHTML = it.focusHtml ? (typeof it.focusHtml === "function" ? it.focusHtml() : it.focusHtml) : _ring.defTitle;
-      };
-      b.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") { if (it.onFocus) it.onFocus(); if (it.confirm) focus(); } });
-      b.onclick = (ev) => {
-        ev.stopPropagation();
-        if (it.isDisabled && it.isDisabled()) return;
-        if (it.confirm && (!_ring || _ring.focus !== it.key)) { focus(); return; } // touch: tap again to confirm
-        it.exec();
-        if (_ring) render();
-      };
-      _ring.items[it.key] = { el: b, render };
-      m.appendChild(b);
-    });
-    m.classList.add("show");
-  }
-  function refreshRing() { if (!_ring) return; for (const k in _ring.items) _ring.items[k].render(); }
-
-  // Build ring: one bubble per unlocked tower of the corridor's element.
-  function openBuildRing(corr, tile, sx, sy) {
-    closeAllPanels();
-    const v = getView(); v.buildTile = tile; v.buildMenuOpen = true;
-    const el = DB.ELEMENTS[corr.element];
-    const slots = DB.unlockedTowerSlots(masteryLevel(corr.element));
-    const list = DB.TOWERS.filter((t) => t.element === corr.element && t.slot < slots);
-    const cur = () => v.state.economy === "shared" ? v.player.gold : v.player.essence[corr.element];
-    const items = list.map((t) => ({
-      key: t.id, color: el.color, confirm: true,
-      html: `<span class="ri-ico">${el.icon}</span><span class="ri-cost">${t.cost}</span>`,
-      focusHtml: () => {
-        const dps = t.archetype === "support" ? "" : ` · ${Math.round(t.damage * t.fireRate)} DPS`;
-        const st = t.status ? ` · ${DB.STATUSES[t.status].icon} ${DB.STATUSES[t.status].name}` : "";
-        return `<b>${t.name}</b> — ${t.cost}g${dps}${st}<br><span class="rl-dim">${t.archetype} · tap again to build</span>`;
-      },
-      onFocus: () => { v.buildPreview = { range: t.range }; },
-      exec: () => { cmd.build(corr.index, tile.c, tile.r, t.id); closeAllPanels(); },
-      isDisabled: () => cur() < t.cost,
-    }));
-    items.push({ key: "x", cls: "rad-cancel", confirm: false, html: "✕", exec: closeAllPanels });
-    showRing(sx, sy, items, { title: `${el.icon} Build — ${Math.floor(cur())}g` });
+  function fieldGeom(view) {
+    const G = view.state.grid, W = cw();
+    const pad = 12, top = view.fieldTopInset ? view.fieldTopInset() : 12;
+    const base = (W - pad * 2) / G.cols;
+    const ts = base * view.fieldCam.zoom;
+    return { ts, ox: pad + view.fieldCam.x, oy: top + view.fieldCam.y };
   }
 
-  // Tower ring: upgrade / sell / target cycle / details.
-  function openTowerRing(corr, tw, sx, sy) {
-    closeAllPanels();
-    const v = getView(); v.selectedTowerId = tw.id; // renderer draws the range circle
-    const el = DB.ELEMENTS[tw.def.element], def = DB.TOWER_BY_ID[tw.def.id];
-    const gold = () => v.state.economy === "shared" ? v.player.gold : v.player.essence[def.element];
-    const upCost = () => Math.round(def.cost * DB.SCALING.upgradeCostBase * Math.pow(DB.SCALING.costGrowth, tw.level - 1));
-    const maxed = () => tw.level >= DB.CONFIG.maxLevel;
-    const TM = ["first", "last", "strong", "weak"];
-    const items = [
-      { key: "up", color: el.color, confirm: false,
-        html: () => maxed() ? `<span class="ri-ico">★</span><span class="ri-cost">MAX</span>` : `<span class="ri-ico">⬆</span><span class="ri-cost">${upCost()}</span>`,
-        isDisabled: () => maxed() || gold() < upCost(),
-        exec: () => { if (!maxed()) cmd.upgrade(corr.index, tw.id); } },
-      { key: "tgt", confirm: false,
-        html: () => `<span class="ri-ico">🎯</span><span class="ri-cost">${tw.targetMode || "first"}</span>`,
-        exec: () => { const m = TM[(TM.indexOf(tw.targetMode || "first") + 1) % TM.length]; cmd.setTarget(corr.index, tw.id, m); } },
-      { key: "info", confirm: false, html: `<span class="ri-ico">ℹ</span><span class="ri-cost">info</span>`,
-        exec: () => openTowerPanel(corr, tw) },
-      { key: "sell", cls: "rad-sell", confirm: true,
-        html: `<span class="ri-ico">💰</span><span class="ri-cost">+${sellRefund(def, tw.level)}</span>`,
-        focusHtml: () => `<b>Sell for +${sellRefund(def, tw.level)}g</b><br><span class="rl-dim">tap again to confirm</span>`,
-        exec: () => { cmd.sell(corr.index, tw.id); closeAllPanels(); } },
-      { key: "x", cls: "rad-cancel", confirm: false, html: "✕", exec: closeAllPanels },
-    ];
-    showRing(sx, sy, items, { title: `${el.icon} ${def.name} · Lv${tw.level}${maxed() ? " · mutations in ℹ" : ""}` });
+  // ---- public entry --------------------------------------------------------
+  function render(view, alpha) {
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cw(), ch());
+    if (view.screen !== "game") return;
+    if (view.view === "world") renderWorld(view);
+    else renderField(view, alpha == null ? 1 : alpha);
   }
 
-  // ---- synergy helpers (display-only views over DB.SYNERGIES) ---------------
-  function synergyEffectText(syn) {
-    const parts = [];
-    if (syn.burst) parts.push(syn.burst + " burst dmg");
-    if (syn.dotMult) parts.push("×" + syn.dotMult + " poison dmg");
-    if (syn.curseBoost) parts.push("×" + syn.curseBoost + " curse dmg");
-    if (syn.execute) parts.push("executes below " + Math.round(syn.execute * 100) + "% HP");
-    if (syn.spread) parts.push("spreads statuses to nearby enemies");
-    if (syn.anchor) parts.push("anchors the tower onto the target");
-    return parts.join(", ");
-  }
-  // What a tower contributes to synergies: the status it APPLIES sets combos up
-  // (finished by other elements); its ELEMENT triggers combos on statuses.
-  function synergiesForTower(def) {
-    const setsUp = [], triggers = [];
-    if (def.status) for (const key in DB.SYNERGIES) {
-      const [st, el] = key.split("|");
-      if (st === def.status && el !== def.element) setsUp.push({ syn: DB.SYNERGIES[key], status: DB.STATUSES[st], el: DB.ELEMENTS[el] });
+  // ---- WORLD map -----------------------------------------------------------
+  function renderWorld(view) {
+    const W = cw(), H = ch();
+    if (!assets.draw("assets/world/background.PNG", 0, 0, W, H)) {
+      const g = ctx.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, Math.max(W, H) * 0.7);
+      g.addColorStop(0, "#1b2140"); g.addColorStop(1, "#0a0c1c");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     }
-    for (const key in DB.SYNERGIES) {
-      const [st, el] = key.split("|");
-      if (el === def.element && st !== def.status) triggers.push({ syn: DB.SYNERGIES[key], status: DB.STATUSES[st], el: DB.ELEMENTS[el] });
+    const gates = gatePositions(view);
+    const wg = worldGeom();
+    if (worldCount(view) > 1) {
+      ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 14; ctx.lineCap = "round";
+      ctx.beginPath(); gates.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.stroke();
+      for (let i = 0; i < gates.length; i++) drawArrow(gates[i], gates[(i + 1) % gates.length], view);
     }
-    return { setsUp, triggers };
+    drawVortex(wg.cx, wg.cy, view);
+    gates.forEach((p, i) => drawGate(p, i, view));
+    view._vortex = { cx: wg.cx, cy: wg.cy, r: 46 };
   }
 
-  // ---- HUD -----------------------------------------------------------------
-  function updateTopBar() {
-    const v = getView(), pl = v.player;
-    setText("lives", (v.state.gameMode === "coop" ? v.state.coopLives : pl.lives) + "/" + pl.maxLives);
-    if (v.state.economy === "shared") setText("currency-display", "🪙 " + Math.floor(pl.gold));
-    else { const cur = pl.elements[v.view === "field" ? v.activeCorridor : 0]; setText("currency-display", DB.ELEMENTS[cur].icon + " " + Math.floor(pl.essence[cur])); }
-    const fld = v.field || pl;
-    setText("wave-display", "Wave " + (v.state.mode === "endless" ? fld.wave : (fld.wave + "/" + fld.totalWaves)));
-    const m = Math.floor(v.time / 60), s = Math.floor(v.time % 60);
-    setText("match-time", (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s);
+  function drawArrow(a, b, view) {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ang = Math.atan2(b.y - a.y, b.x - a.x), size = 40;
+    const img = assets.get("assets/world/arrow.PNG");
+    ctx.save(); ctx.translate(mx, my); ctx.rotate(ang);
+    if (img && img.ready) ctx.drawImage(img, -size / 2, -size / 2, size, size);
+    else { ctx.fillStyle = "rgba(255,255,255,.4)"; ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-6, -6); ctx.lineTo(-6, 6); ctx.closePath(); ctx.fill(); }
+    ctx.restore();
   }
 
-  function updateEnemyOverview() {
-    const ov = $("enemy-overview"); if (!ov) return;
-    const v = getView();
-    let html;
-    if (v.versus) {
-      // one row per SEAT: name, element, lives, enemies currently in the corridor
-      html = `<div class="ov-head">Corridors · sends travel →</div>`;
-      v.state.players.forEach((p, i) => {
-        const el = DB.ELEMENTS[p.elements[0]];
-        let inside = 0; for (const e of v.state.enemies) if (e.owner === i) inside++;
-        const name = i === v.me ? "You" : "NPC " + i;
-        html += `<div class="ov-row ${p.alive ? "" : "dead"}" data-ci="${i}">
-          <span class="ov-el" style="color:${el.color}">${el.icon} ${name}</span>
-          <span class="ov-num">${p.alive ? "❤" + p.lives + " · 👾" + inside : "☠ out"}</span>
-          <div class="ov-bar"><div style="width:${Math.min(100, (p.lives / p.maxLives) * 100)}%;background:${p.alive ? el.color : "#555"}"></div></div></div>`;
-      });
+  function drawVortex(cx, cy, view) {
+    const fld = view.versus ? view.state.players[view.me] : view.field; // versus: my seat's wave
+    const active = fld.phase === "prep", r = 46;
+    const path = active ? "assets/world/vortex_active.PNG" : "assets/world/vortex_idle.PNG";
+    const img = assets.get(path);
+    if (img && (img.ready || (img.complete && img.naturalWidth > 0))) {
+      img.ready = true; const spin = view.time * (active ? 2.8 : 0.8);
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(spin); ctx.drawImage(img, -r, -r, r * 2, r * 2); ctx.restore();
     } else {
-      const fld = v.field;
-      html = `<div class="ov-head">Survivors by Origin</div>`;
-      for (let i = 0; i < fld.corridorCount; i++) {
-        const el = DB.ELEMENTS[fld.elements[i]];
-        let alive = 0; for (const e of v.state.enemies) if (e.owner === v.fieldId && e.originIndex === i) alive++;
-        const total = fld.corridors[i].spawnedTotal, pct = total ? alive / total : 0;
-        html += `<div class="ov-row" data-ci="${i}"><span class="ov-el" style="color:${el.color}">${el.icon} ${el.name}</span><span class="ov-num">${alive}/${total}</span><div class="ov-bar"><div style="width:${pct * 100}%;background:${el.color}"></div></div></div>`;
+      const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, r);
+      if (active) { grad.addColorStop(0, "#ff2e7e"); grad.addColorStop(1, "#3a0d2a"); }
+      else { grad.addColorStop(0, "#3a4170"); grad.addColorStop(1, "#10132a"); }
+      ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    }
+    const overlay = active ? "assets/world/vortex_text_summon.PNG" : "assets/world/vortex_text_wave.PNG";
+    if (!assets.draw(overlay, cx - r, cy - r, r * 2, r * 2)) {
+      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      if (active) { ctx.font = "bold 16px system-ui"; ctx.fillText("SUMMON", cx, cy - 4); ctx.font = "11px system-ui"; ctx.fillText("End Boss", cx, cy + 12); }
+      else {
+        ctx.font = "bold 18px system-ui"; ctx.fillText("Wave", cx, cy - 8);
+        ctx.font = "bold 20px system-ui";
+        ctx.fillText(view.state.mode === "endless" ? fld.wave : (fld.wave + "/" + fld.totalWaves), cx, cy + 12);
       }
     }
-    ov.innerHTML = html;
-    ov.querySelectorAll(".ov-row").forEach((r) => r.onclick = () => opts.enterCorridor(+r.dataset.ci));
   }
 
-  function updateWavePanel() {
-    const v = getView(), pl = v.field;
-    let label = "▶ Start Wave " + (pl.wave + 1);
-    if (v.state.mode !== "endless" && pl.wave >= pl.totalWaves && pl.phase !== "prep") label = "Clear Enemies";
-    if (pl.phase === "prep") label = "Summon Boss";
-    if (pl.phase === "endboss") label = "Boss Active";
-    const b = $("quick-start-wave");
-    if (b) { b.textContent = label; b.classList.toggle("disabled", pl.phase === "endboss"); }
-    const sb = $("quick-speed-cycle"); if (sb) sb.textContent = "×" + v.speed;
-    updateWavePreview();
-  }
-
-  // ---- next-wave preview (display-only; mirrors deterministic generateWave) --
-  function updateWavePreview() {
-    const wp = $("wave-preview"); if (!wp) return;
-    const v = getView(), pl = v.field;
-    let html = "";
-    if (pl.phase === "build" && (v.state.mode === "endless" || pl.wave < pl.totalWaves)) {
-      const next = pl.wave + 1;
-      const isBoss = next % DB.CONFIG.bossEvery === 0;
-      const agg = {};
-      for (const g of generateWave(next, pl.corridorCount, DB.CONFIG.bossEvery)) agg[g.type] = (agg[g.type] || 0) + g.count;
-      const affix = waveAffix(v.state.seedBase, next, DB.CONFIG.bossEvery);
-      const parts = Object.keys(agg).map((t) => {
-        const d = DB.ENEMIES[t] || { name: t };
-        const n = (affix && affix.countMult) ? Math.max(1, Math.round(agg[t] * affix.countMult)) : agg[t];
-        return `<span class="wprev-item${d.boss ? " boss" : ""}">${n}× ${d.name}</span>`;
-      });
-      html = `<span class="wprev-label${isBoss ? " boss" : ""}">${isBoss ? "⚠ Boss Wave " + next + ":" : "Next:"}</span> ${parts.join('<span class="wprev-sep">·</span>')}`;
-      if (affix) html += ` <span class="wprev-affix" title="${affix.desc}">${affix.icon} ${affix.name}</span>`;
-    } else if (pl.phase === "prep") {
-      html = `<span class="wprev-label boss">⚠ Final:</span> <span class="wprev-item boss">1× ${(DB.ENEMIES.endboss && DB.ENEMIES.endboss.name) || "End Boss"}</span>`;
+  function drawGate(p, i, view) {
+    const corr = worldCorr(view, i), el = DB.ELEMENTS[corr.element], r = 34;
+    const seat = view.versus ? view.state.players[i] : null;
+    const inside = countEnemies(view, i, "corr"), origin = countEnemies(view, i, "origin");
+    ctx.save();
+    if (seat && !seat.alive) ctx.globalAlpha = 0.35; // eliminated seat
+    if (inside > 0) { ctx.shadowColor = el.color; ctx.shadowBlur = 18; }
+    const gateAsset = el.gateAsset || `assets/world/gates/${corr.element}.PNG`;
+    const img = assets.get(gateAsset);
+    if (img && img !== false && (img.ready || (img.complete && img.naturalWidth > 0))) {
+      img.ready = true; const gw = r * 3.2, gh = gw * (img.naturalHeight / img.naturalWidth);
+      ctx.drawImage(img, p.x - gw * 0.5, p.y - gh * 0.42, gw, gh);
+    } else {
+      const grad = ctx.createRadialGradient(p.x, p.y, 4, p.x, p.y, r);
+      grad.addColorStop(0, el.glow); grad.addColorStop(1, el.dark);
+      ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.fill();
+      ctx.fillStyle = "#0d0f1a"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "26px serif"; ctx.fillText(el.icon, p.x, p.y - 2);
+      ctx.lineWidth = (i === view.activeCorridor) ? 5 : 3; ctx.strokeStyle = (i === view.activeCorridor) ? "#fff" : el.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7); ctx.stroke();
     }
-    wp.innerHTML = html;
-    wp.classList.toggle("show", !!html);
-  }
-
-  // ---- build menu ----------------------------------------------------------
-  function openBuildMenu(corr, tile) {
-    closeAllPanels();
-    const v = getView(); v.buildTile = tile; v.buildMenuOpen = true;
-    const el = DB.ELEMENTS[corr.element];
-    const slots = DB.unlockedTowerSlots(masteryLevel(corr.element));
-    const list = DB.TOWERS.filter((t) => t.element === corr.element && t.slot < slots);
-    const menu = $("build-menu");
-    const cur = v.state.economy === "shared" ? v.player.gold : v.player.essence[corr.element];
-    menu.innerHTML = `<div class="panel-head">${el.icon} Build — ${el.name} <span class="cur">${Math.floor(cur)} ${v.state.economy === "shared" ? "G" : el.currency.split(" ")[0]}</span></div>`;
-    const grid = document.createElement("div"); grid.className = "build-grid";
-    list.forEach((t) => {
-      const b = document.createElement("button"); b.className = "build-card"; b.style.setProperty("--ec", el.color);
-      if (cur < t.cost) b.classList.add("cant");
-      const dps = (t.archetype === "support") ? 0 : Math.round(t.damage * t.fireRate);
-      const combos = synergiesForTower(t).setsUp;
-      b.innerHTML = `<div class="bc-name">${t.name}</div><div class="bc-arch">${t.archetype}</div>`
-        + `<div class="bc-stats">⚔ ${t.damage} · ◎ ${t.range.toFixed(1)} · ⚡ ${t.fireRate}${dps ? ` · <b>${dps} DPS</b>` : ""}</div>`
-        + (t.status ? `<div class="bc-eff">${DB.STATUSES[t.status].icon} ${DB.STATUSES[t.status].name}</div>` : "")
-        + (combos.length ? `<div class="bc-syn">⚗ Combos: ${combos.map((s) => s.el.icon).join(" ")}</div>` : "")
-        + `<div class="bc-cost">${t.cost}</div>`;
-      // browsing a card previews its range at the build spot (see render/draw.js)
-      const preview = () => { v.buildPreview = { range: t.range }; };
-      b.addEventListener("pointerenter", preview);
-      b.addEventListener("pointerdown", preview);
-      b.onclick = () => { cmd.build(corr.index, tile.c, tile.r, t.id); closeAllPanels(); };
-      grid.appendChild(b);
-    });
-    menu.appendChild(grid);
-    const close = document.createElement("button"); close.className = "panel-close"; close.textContent = "✕"; close.onclick = closeAllPanels; menu.appendChild(close);
-    menu.classList.add("show");
-  }
-
-  // ---- tower panel ---------------------------------------------------------
-  function openTowerPanel(corr, tw) {
-    closeAllPanels();
-    const v = getView(); v.selectedTowerId = tw.id;
-    const el = DB.ELEMENTS[tw.def.element], def = DB.TOWER_BY_ID[tw.def.id];
-    const maxed = tw.level >= DB.CONFIG.maxLevel;
-    const cost = Math.round(def.cost * DB.SCALING.upgradeCostBase * Math.pow(DB.SCALING.costGrowth, tw.level - 1));
-    const slots = DB.mutationSlotsAvailable(masteryLevel(tw.def.element));
-    const expNeed = tw.expert < 5 ? DB.CONFIG.expertThresholds[tw.expert] : tw.kills;
-    const expPct = tw.expert < 5 ? Math.min(1, tw.kills / expNeed) : 1;
-    const cur = towerView(def, tw.level, tw.expert);
-    const nxt = maxed ? null : towerView(def, tw.level + 1, tw.expert);
-    const refund = sellRefund(def, tw.level);
-    let html = `<button class="panel-close" id="tp-close">✕</button>
-      <div class="tp-head" style="--ec:${el.color}"><span class="tp-icon">${el.icon}</span><div><div class="tp-name">${def.name}</div><div class="tp-sub">${el.name} · ${def.archetype}</div></div></div>
-      <div class="tp-levels"><span class="badge">Lv ${tw.level}/10</span><span class="badge gold">Expert ${tw.expert}/5</span></div>
-      <div class="exp-bar"><div style="width:${expPct * 100}%"></div></div>
-      <div class="exp-label">${tw.expert < 5 ? tw.kills + " / " + expNeed + " kills" : "MAX EXPERTISE"} · ${tw.kills} total kills</div>
-      <div class="tp-stats">
-        ${statRow("Damage", cur.dmg.toFixed(0), nxt && nxt.dmg.toFixed(0))}
-        ${statRow("Range", cur.range.toFixed(1), nxt && nxt.range.toFixed(1))}
-        ${statRow("Atk Speed", cur.rate.toFixed(2), nxt && nxt.rate.toFixed(2))}
-        ${def.archetype !== "support" ? statRow("DPS", Math.round(cur.dmg * cur.rate), nxt && Math.round(nxt.dmg * nxt.rate)) : ""}
-        ${def.status ? `<div class="tp-eff">${DB.STATUSES[def.status].icon} Applies ${DB.STATUSES[def.status].name}</div>` : ""}
-      </div>
-      <div class="tp-target"><span class="tt-lbl">Target</span>${["first", "last", "strong", "weak"].map((m) =>
-        `<button class="tm-btn ${(tw.targetMode || "first") === m ? "sel" : ""}" data-tm="${m}">${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</div>
-      ${towerSynergyHtml(def)}
-      <div class="tp-actions">
-        <button id="tp-upgrade" class="${maxed ? "disabled" : ""}">${maxed ? "MAX LEVEL" : "Upgrade · " + cost}</button>
-        <button id="tp-sell" class="sell">Sell · +${refund}</button>
-      </div>`;
-    if (maxed) {
-      html += `<div class="tp-mut-head">Mutations ${slots ? `(${tw.mutations.length}/${slots} slots)` : "(locked — raise Mastery)"}</div><div class="tp-muts">`;
-      def.mutations.forEach((m) => { const have = tw.mutations.includes(m.id); html += `<button class="mut-card ${have ? "have" : ""}" data-mut="${m.id}"><div class="mut-name">${m.name}</div><div class="mut-desc">${m.desc}</div></button>`; });
-      html += `</div>`;
-    } else html += `<div class="tp-mut-head dim">Mutations unlock at max level</div>`;
-    const p = $("tower-panel"); p.innerHTML = html; p.classList.add("show");
-    $("tp-close").onclick = closeAllPanels;
-    $("tp-upgrade").onclick = () => { if (!maxed) cmd.upgrade(corr.index, tw.id); };
-    $("tp-sell").onclick = () => { cmd.sell(corr.index, tw.id); closeAllPanels(); };
-    p.querySelectorAll("[data-mut]").forEach((b) => b.onclick = () => cmd.mutate(corr.index, tw.id, b.dataset.mut));
-    p.querySelectorAll("[data-tm]").forEach((b) => b.onclick = () => cmd.setTarget(corr.index, tw.id, b.dataset.tm));
-    _twSig = tw.level + "/" + tw.expert + "/" + tw.kills + "/" + tw.mutations.length + "/" + (tw.targetMode || "first");
-  }
-  // compact synergy block for the tower panel
-  function towerSynergyHtml(def) {
-    const { setsUp, triggers } = synergiesForTower(def);
-    if (!setsUp.length && !triggers.length) return "";
-    let h = `<div class="tp-syn"><div class="tp-syn-head">⚗ Synergies</div>`;
-    for (const s of setsUp) h += `<div class="tp-syn-row">${s.status.icon}+${s.el.icon} <b style="color:${s.syn.color}">${s.syn.name}</b> — hit ${s.status.name} enemies with ${s.el.name}: ${synergyEffectText(s.syn)}</div>`;
-    for (const s of triggers) h += `<div class="tp-syn-row">${s.status.icon}+${s.el.icon} <b style="color:${s.syn.color}">${s.syn.name}</b> — this tower triggers it on ${s.status.name} enemies: ${synergyEffectText(s.syn)}</div>`;
-    return h + `</div>`;
-  }
-  function statRow(label, val, next) { return `<div class="stat-row"><span>${label}</span><span>${val}${(next != null && String(next) !== String(val)) ? ` <em>\u2192 ${next}</em>` : ""}</span></div>`; }
-  // display-only sell value (mirrors core totalInvested * sellRefund)
-  function sellRefund(def, level) {
-    const S = DB.SCALING;
-    let invested = def.cost;
-    for (let l = 1; l < level; l++) invested += Math.round(def.cost * S.upgradeCostBase * Math.pow(S.costGrowth, l - 1));
-    return Math.round(invested * DB.CONFIG.sellRefund);
-  }
-  // display-only stat projection (mirrors core scaling: per-level + expert bonus)
-  function towerView(def, level, expert) {
-    const S = DB.SCALING, C = DB.CONFIG;
-    const dmg = def.damage * Math.pow(1 + S.damagePerLevel, level - 1) * (1 + (C.expertDamageBonus[expert] || 0));
-    const rate = def.fireRate * Math.pow(1 + S.fireRatePerLevel, level - 1);
-    const range = def.range + S.rangePerLevel * (level - 1);
-    return { dmg, rate, range };
-  }
-
-  // ---- enemy panel ---------------------------------------------------------
-  const ADAPT_INFO = {
-    speed:    { icon: "💨", name: "Swift" },
-    health:   { icon: "🩸", name: "Vital" },
-    armor:    { icon: "🛡️", name: "Armored" },
-    resist:   { icon: "🔰", name: "Resistant" },
-    momentum: { icon: "🌀", name: "Momentum" },
-    hardened: { icon: "🪨", name: "Hardened" },
-  };
-  function openEnemyPanel(e) {
-    closeAllPanels();
-    const v = getView(); v.selectedEnemyId = e.id;
-    const oel = DB.ELEMENTS[v.player.elements[e.originIndex]];
-    const stk = (e.statusKeys || []).map((k) => DB.STATUSES[k]).filter(Boolean);
-    const affix = e.affix && AFFIXES[e.affix];
-    // adaptations gained from completed loops (recorded by the sim)
-    const adapts = Object.keys(e.adapt || {}).map((k) => {
-      const a = ADAPT_INFO[k] || { icon: "↻", name: k }; const n = e.adapt[k];
-      return `<span class="stag" style="--sc:#ffd23d">${a.icon} ${a.name}${n > 1 ? " ×" + n : ""}</span>`;
-    });
-    const p = $("enemy-panel");
-    p.innerHTML = `<button class="panel-close" id="ep-close">✕</button>
-      <div class="ep-head">${e.boss ? "☠ " : ""}${e.def.id}${e.end ? " (END BOSS)" : ""}${e.sent ? " · SENT" : ""}${affix ? ` · ${affix.icon} ${affix.name.toUpperCase()}` : ""}</div>
-      <div class="exp-bar big"><div style="width:${Math.min(1, Math.max(0, e.hp) / e.maxHp) * 100}%;background:#ff4d6d"></div></div>
-      <div class="exp-label">${Math.max(0, toI(e.hp))} / ${toI(e.maxHp)} HP</div>
-      <div class="tp-stats">${statRow("Origin", oel.icon + " " + oel.name)}${statRow("Loops", e.loopCount)}${statRow("Armor", toI(e.armor))}${statRow("Reward", e.reward)}</div>
-      <div class="ep-status">${stk.length ? stk.map((s) => `<span class="stag" style="--sc:${s.color}">${s.icon} ${s.name}</span>`).join("") : "<span class='dim'>No status</span>"}</div>
-      ${adapts.length ? `<div class="ep-adapt-head">↻ Loop adaptations</div><div class="ep-status">${adapts.join("")}</div>` : ""}`;
-    p.classList.add("show");
-    $("ep-close").onclick = closeAllPanels;
-  }
-
-  // ---- send panel (competitive + versus): flat costs, 5 upgrade levels ------
-  function toggleSendPanel() {
-    const p = $("send-panel"); if (!p) return;
-    if (p.classList.contains("show")) { closeAllPanels(); return; }
-    closeAllPanels();
-    p.classList.add("show");
-    renderSendPanel(true);
-  }
-  function sendPanelSig(pl) {
-    let sig = "";
-    for (const t in DB.SENDS) {
-      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
-      sig += t + lvl + (pl.gold >= DB.sendCost(t, lvl) ? "y" : "n") + (lvl < DB.SEND_MAX_LEVEL && pl.gold >= DB.sendUpgradeCost(t, lvl) ? "Y" : "N");
+    ctx.shadowBlur = 0;
+    if (seat) {
+      // versus: seat name + lives + enemies inside
+      ctx.font = "bold 13px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = i === view.me ? "#ffd23d" : "#fff";
+      ctx.fillText(seat.alive ? (i === view.me ? "YOU" : "NPC " + i) : "☠", p.x, p.y + r + 14);
+      ctx.font = "12px system-ui"; ctx.fillStyle = "#cfe";
+      ctx.fillText(seat.alive ? ("❤" + seat.lives + "  👾" + inside) : "eliminated", p.x, p.y + r + 30);
+    } else {
+      ctx.font = "bold 16px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff"; ctx.fillText(inside, p.x, p.y + r + 14);
+      ctx.font = "12px system-ui"; ctx.fillStyle = "#cfe"; ctx.fillText(origin + "/" + corr.spawnedTotal, p.x, p.y + r + 30);
     }
-    return sig + "|" + Math.floor((getView().player.income || 0));
-  }
-  function renderSendPanel(force) {
-    const p = $("send-panel"); if (!p || !p.classList.contains("show")) return;
-    const v = getView(), pl = v.player;
-    const sig = sendPanelSig(pl);
-    if (!force && sig === _sendSig) return;
-    _sendSig = sig;
-    let html = `<button class="panel-close" id="sp-close">✕</button>
-      <div class="panel-head">⚔ Send Mobs <span class="cur">💰 Income +${pl.income || 0}/5s</span></div>
-      <p class="sp-note">${v.versus ? "Sends march into the NEXT corridor. Leaked mobs cost a life and travel on." : "Sends spawn on your opponent's field."} Flat cost per level — upgrade a type to make it stronger (and pricier).</p>
-      <div class="sp-rows">`;
-    for (const t in DB.SENDS) {
-      const s = DB.SENDS[t], en = DB.ENEMIES[t] || { name: t };
-      const lvl = (pl.sendLevels && pl.sendLevels[t]) || 1;
-      const cost = DB.sendCost(t, lvl);
-      const hp = Math.round(en.hp * DB.sendHpMult(t, lvl));
-      const maxed = lvl >= DB.SEND_MAX_LEVEL;
-      const upCost = maxed ? 0 : DB.sendUpgradeCost(t, lvl);
-      html += `<div class="sp-row">
-        <div class="sp-info">
-          <div class="sp-name">${en.name}${s.count > 1 ? ` <span class="sp-count">×${s.count}</span>` : ""}
-            <span class="sp-pips">${[1, 2, 3, 4, 5].map((i) => `<b class="${i <= lvl ? "on" : ""}"></b>`).join("")}</span></div>
-          <div class="sp-desc">${s.desc} · ♥ ${hp}${en.armor ? " · 🛡 " + en.armor : ""}${en.speed >= 1.5 ? " · 💨" : ""}</div>
-        </div>
-        <button class="sp-send ${pl.gold < cost ? "cant" : ""}" data-send="${t}">Send · ${cost}</button>
-        <button class="sp-up ${maxed ? "maxed" : (pl.gold < upCost ? "cant" : "")}" data-up="${t}">${maxed ? "MAX" : "⬆ Lv" + (lvl + 1) + " · " + upCost}</button>
-      </div>`;
-    }
-    html += `</div>`;
-    p.innerHTML = html;
-    $("sp-close").onclick = closeAllPanels;
-    p.querySelectorAll("[data-send]").forEach((b) => b.onclick = () => cmd.sendAuto(b.dataset.send));
-    p.querySelectorAll("[data-up]").forEach((b) => b.onclick = () => cmd.upgradeSend(b.dataset.up));
+    ctx.restore();
   }
 
-  // ---- live panel refresh (tower stats / enemy hp+status update in place) ----
-  function refreshPanels() {
-    const v = getView(); if (!v.state) return;
-    refreshRing(); // live affordability on radial items
-    if (v.selectedTowerId) {
-      let found = null, fcorr = null;
-      for (const c of v.field.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
-      if (!found) { closeAllPanels(); _twSig = null; return; }
-      const tp = $("tower-panel");
-      if (!tp || !tp.classList.contains("show")) return; // ring open, details sheet closed
-      const sig = found.level + "/" + found.expert + "/" + found.kills + "/" + found.mutations.length + "/" + (found.targetMode || "first");
-      if (sig !== _twSig) openTowerPanel(fcorr, found); // rebuild only when it actually changed -> buttons stay clickable
-    } else if (v.selectedEnemyId) {
-      const e = v.state.enemies.find((e) => e.id === v.selectedEnemyId && e.owner === v.fieldId);
-      if (e && e.alive) openEnemyPanel(e); else closeAllPanels();
+  function countEnemies(view, ci, kind) {
+    let n = 0;
+    for (const e of view.state.enemies) {
+      if (view.versus) { if (e.owner === ci) n++; continue; } // versus: seat = owner
+      if (e.owner !== view.fieldId) continue;
+      if (kind === "corr" && e.corridorIndex === ci) n++;
+      else if (kind === "origin" && e.originIndex === ci) n++;
     }
-    renderSendPanel(false);
-    updateBossBar();
+    return n;
   }
 
-  // ---- boss HP bar (top of the game stage while a boss is alive) ------------
-  function updateBossBar() {
-    const bb = $("boss-bar"); if (!bb) return;
-    const v = getView();
-    if (!v.state || v.screen !== "game") { bb.classList.remove("show"); return; }
-    let boss = null;
-    for (const e of v.state.enemies) {
-      if (!e.alive || e.owner !== v.fieldId || !e.boss) continue;
-      if (!boss || (e.end && !boss.end) || (e.end === boss.end && e.maxHp > boss.maxHp)) boss = e;
+  // ---- FIELD ---------------------------------------------------------------
+  function renderField(view, alpha) {
+    // versus: view.field is the viewed SEAT (one corridor); otherwise index in my field
+    const corr = view.versus ? view.field.corridors[0] : view.field.corridors[view.activeCorridor];
+    if (!corr) return;
+    const G = view.state.grid, el = DB.ELEMENTS[corr.element];
+    const { ts, ox, oy } = fieldGeom(view);
+    const W = cw(), H = ch();
+    if (!assets.draw("assets/ui/field-background.PNG", 0, 0, W, H)) { ctx.fillStyle = "#0a0c1c"; ctx.fillRect(0, 0, W, H); }
+    const cbg = el.fieldAsset || `assets/corridors/${corr.element}.PNG`;
+    if (!assets.draw(cbg, ox, oy, ts * G.cols, ts * G.rows)) {
+      const g = ctx.createLinearGradient(0, oy, 0, oy + ts * G.rows); g.addColorStop(0, el.dark); g.addColorStop(1, "#0e1020");
+      ctx.fillStyle = g; ctx.fillRect(ox, oy, ts * G.cols, ts * G.rows);
     }
-    if (!boss) { bb.classList.remove("show"); return; }
-    const name = (DB.ENEMIES[boss.type] || {}).name || boss.type;
-    setText("boss-name", "☠ " + name + (boss.loopCount ? "  ↻" + boss.loopCount : ""));
-    const f = $("boss-fill"); if (f) f.style.width = (Math.max(0, Math.min(1, (boss.hp / boss.maxHp))) * 100) + "%";
-    bb.classList.toggle("end", !!boss.end);
-    bb.classList.add("show");
-  }
-
-  // ---- setup screen --------------------------------------------------------
-  // One-line explanations shown under each option group (updates with selection).
-  const SETUP_DESCS = {
-    mode: {
-      single: "One corridor, 10 waves. A short, focused run.",
-      loop: "Corridors form a ring — enemies that survive a corridor move on to the next and loop back around until destroyed. 10 waves per corridor.",
-      endless: "No final wave. Survive and climb as long as you can.",
-    },
-    gamemode: {
-      solo: "Play alone on your own battlefield.",
-      versus: "Offline battle royale: you own ONE corridor in a ring of 3–8. NPC rivals hold the rest. Leaked mobs cost a life and march into the next corridor. Send mobs to bury your neighbor. Last one standing wins.",
-      coop: "Defend one shared battlefield and life pool together. Requires a multiplayer room.",
-      competitive: "Separate battlefields — spend resources to send extra enemies at your rival. Requires a multiplayer room.",
-    },
-    econ: {
-      shared: "One gold pool pays for every tower, across all corridors.",
-      elemental: "Each element earns and spends its own essence — kills pay out in the corridor's element.",
-    },
-    status: {
-      standard: "Enemies carry one status effect at a time — a new one replaces the old.",
-      advanced: "Status effects from different towers stack and combine; enemies lock their statuses after each full loop.",
-    },
-    pacing: {
-      manual: "Take your time between waves. You can still toggle ⟳ Auto in-game, and calling a wave early while enemies remain pays a gold bonus.",
-      auto: "The next wave starts automatically 5 seconds after the last one is cleared. The final End Boss always waits for you.",
-    },
-  };
-  function updateSetupDescs(setup) {
-    setText("desc-mode", SETUP_DESCS.mode[setup.mode] || "");
-    setText("desc-gamemode", SETUP_DESCS.gamemode[setup.gameMode] || "");
-    setText("desc-econ", SETUP_DESCS.econ[setup.economy] || "");
-    setText("desc-status", SETUP_DESCS.status[setup.status] || "");
-    setText("desc-pacing", SETUP_DESCS.pacing[setup.pacing] || "");
-  }
-  function renderSetup(setup, availElements) {
-    const vs = setup.gameMode === "versus";
-    if (vs && setup.corridors < 3) setup.corridors = 4;
-    updateSetupDescs(setup);
-    document.querySelectorAll("[data-pacing]").forEach((b) => b.classList.toggle("sel", b.dataset.pacing === setup.pacing));
-    // versus forces endless waves + shared gold: grey out the irrelevant chips
-    document.querySelectorAll("[data-mode]").forEach((b) => { b.classList.toggle("sel", !vs && b.dataset.mode === setup.mode); b.classList.toggle("disabled", vs); });
-    const cc = $("corridor-buttons");
-    if (cc && !cc.dataset.built) {
-      cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { if (setup.mode === "single" && setup.gameMode !== "versus") return; if (setup.gameMode === "versus" && n < 3) return; setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
+    if (!assets.draw("assets/ui/grid-overlay.PNG", ox, oy, ts * G.cols, ts * G.rows)) {
+      ctx.strokeStyle = "rgba(255,255,255,.05)"; ctx.lineWidth = 1; ctx.beginPath();
+      for (let c = 0; c <= G.cols; c++) { ctx.moveTo(ox + c * ts, oy); ctx.lineTo(ox + c * ts, oy + ts * G.rows); }
+      for (let r = 0; r <= G.rows; r++) { ctx.moveTo(ox, oy + r * ts); ctx.lineTo(ox + ts * G.cols, oy + r * ts); }
+      ctx.stroke();
     }
-    if (cc) cc.querySelectorAll(".chip").forEach((b) => { b.classList.toggle("sel", +b.dataset.cn === setup.corridors); b.classList.toggle("disabled", (setup.mode === "single" && !vs) || (vs && +b.dataset.cn < 3)); });
-    const shape = $("shape-name"); if (shape) shape.textContent = vs ? ("You + " + (setup.corridors - 1) + " NPCs") : (DB.SHAPE_NAMES[setup.corridors] || "");
-    if (setup.mode === "single" && !vs) setup.corridors = 1;
-    document.querySelectorAll("[data-econ]").forEach((b) => { b.classList.toggle("sel", vs ? b.dataset.econ === "shared" : b.dataset.econ === setup.economy); b.classList.toggle("disabled", vs); });
-    document.querySelectorAll("[data-status]").forEach((b) => b.classList.toggle("sel", b.dataset.status === setup.status));
-    const wrap = $("element-assign");
-    if (wrap) {
-      wrap.innerHTML = ""; const n = vs ? 1 : (setup.mode === "single" ? 1 : setup.corridors);
-      for (let i = 0; i < n; i++) {
-        if (!availElements.includes(setup.elements[i])) setup.elements[i] = availElements[i % availElements.length];
-        const row = document.createElement("div"); row.className = "assign-row";
-        const lbl = document.createElement("div"); lbl.className = "assign-lbl"; lbl.textContent = vs ? "Your Element (NPCs get the rest at random)" : "Corridor " + (i + 1); row.appendChild(lbl);
-        const optsEl = document.createElement("div"); optsEl.className = "assign-opts";
-        availElements.forEach((eid) => { const el = DB.ELEMENTS[eid]; const b = document.createElement("button"); b.className = "elbtn"; b.style.setProperty("--ec", el.color); b.innerHTML = `<span>${el.icon}</span>${el.name}`; b.classList.toggle("sel", setup.elements[i] === eid); b.onclick = () => { setup.elements[i] = eid; renderSetup(setup, availElements); }; optsEl.appendChild(b); });
-        row.appendChild(optsEl); wrap.appendChild(row);
+    // obstacles (grid cell code 1)
+    for (let r = 0; r < G.rows; r++) for (let c = 0; c < G.cols; c++) if (corr.grid[r * G.cols + c] === 1) drawObstacle(ox + c * ts, oy + r * ts, ts, el, (r + c) % 2);
+    drawPortal(corr.entrance, ts, ox, oy, el, true);
+    drawPortal(corr.exit, ts, ox, oy, el, false);
+    // build preview — at the ACTUAL spot the sim would build (view.buildSpot), or hidden
+    if (view.buildMenuOpen && view.buildSpot) {
+      const sp = view.buildSpot;
+      const bx = ox + sp.c * ts, by = oy + sp.r * ts, bs = ts * 3;
+      if (!assets.draw("assets/ui/build-preview.PNG", bx, by, bs, bs)) { ctx.fillStyle = "rgba(80,255,120,.25)"; ctx.fillRect(bx, by, bs, bs); }
+      // range ring for the tower card currently being browsed in the build menu
+      if (view.buildPreview && view.buildPreview.range) {
+        const rr = view.buildPreview.range * ts;
+        const rx = bx + bs / 2, ry = by + bs / 2;
+        ctx.beginPath(); ctx.arc(rx, ry, rr, 0, 7);
+        ctx.strokeStyle = "rgba(120,255,160,.6)"; ctx.lineWidth = 2; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(120,255,160,.07)"; ctx.fill();
       }
     }
-    drawShapePreview(setup);
+    for (const tw of corr.towers) drawTower(tw, ts, ox, oy, el, view);
+    // range circle for selected tower
+    if (view.selectedTowerId) {
+      const tw = corr.towers.find((t) => t.id === view.selectedTowerId);
+      if (tw) { const rr = TILE(towerRange(tw)) * ts; const rx = ox + TILE(tw.cx) * ts, ry = oy + TILE(tw.cy) * ts;
+        if (!assets.draw("assets/ui/range-circle.PNG", rx - rr, ry - rr, rr * 2, rr * 2)) {
+          ctx.beginPath(); ctx.arc(rx, ry, rr, 0, 7); ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = 2; ctx.stroke();
+          ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fill();
+        } } }
+    // enemies (interpolated)
+    for (const e of view.state.enemies) {
+      if (e.owner !== view.fieldId || e.corridorIndex !== corr.index) continue;
+      drawEnemy(e, ts, ox, oy, view, alpha);
+    }
+    // projectiles
+    for (const p of view.state.projectiles) {
+      if (p.owner !== view.fieldId || p.corr.index !== corr.index) continue;
+      const px = ox + TILE(p.x) * ts, py = oy + TILE(p.y) * ts, pr = Math.max(3, ts * 0.12);
+      const asset = `assets/projectiles/${p.element}.PNG`;
+      if (!assets.draw(asset, px - pr, py - pr, pr * 2, pr * 2)) { ctx.fillStyle = DB.ELEMENTS[p.element].color; ctx.beginPath(); ctx.arc(px, py, pr, 0, 7); ctx.fill(); }
+    }
   }
 
-  // ---- setup preview (shape polygon + chosen element icons) ----------------
-  function drawShapePreview(setup) {
-    const c = $("preview-canvas"); if (!c) return;
-    const x = c.getContext("2d");
-    const W = c.width = c.clientWidth * 2, H = c.height = c.clientHeight * 2;
-    x.clearRect(0, 0, W, H);
-    const n = setup.gameMode === "versus" ? setup.corridors : (setup.mode === "single" ? 1 : setup.corridors);
-    const pts = DB.polygonPoints(n);
-    const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.36;
-    x.lineWidth = 4; x.strokeStyle = "rgba(255,255,255,.25)";
-    if (n > 1) {
-      x.beginPath();
-      pts.forEach((p, i) => { const px = cx + p.x * R, py = cy + p.y * R; i ? x.lineTo(px, py) : x.moveTo(px, py); });
-      x.closePath(); x.stroke();
+  function towerRange(tw) {
+    // mirror core's range scaling for the ring (display only)
+    const S = DB.SCALING; let range = DB.TOWER_BY_ID[tw.def.id].range;
+    range = fx.fromFloat(range) + fx.mul(fx.fromFloat(S.rangePerLevel), fx.fromInt(tw.level - 1));
+    return range;
+  }
+
+  function drawObstacle(x, y, ts, el, variant) {
+    const id = el.id; const asset = `assets/obstacles/${id}_${variant}.PNG`;
+    const dw = ts * 1.3, dh = ts * 1.7, dx = x + (ts - dw) / 2, dy = y + (ts - dh) / 2;
+    if (assets.draw(asset, dx, dy, dw, dh)) return;
+    ctx.fillStyle = el.dark; ctx.strokeStyle = el.color; ctx.lineWidth = 2; ctx.beginPath();
+    const cx = x + ts / 2, cy = y + ts / 2, r = ts * 0.42;
+    for (let i = 0; i < 6; i++) { const a = i / 6 * 6.28, px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
+  function drawPortal(pt, ts, ox, oy, el, entrance) {
+    const baseX = ox + (pt.c - 1) * ts, baseY = oy + pt.r * ts, baseW = ts * 3, baseH = ts;
+    const w = ts * 7, h = ts * 2, cX = baseX + baseW / 2, cY = baseY + baseH / 2;
+    const asset = entrance ? "assets/portals/in.PNG" : "assets/portals/out.PNG";
+    if (assets.draw(asset, cX - w / 2, cY - h / 2, w, h)) return;
+    const grad = ctx.createLinearGradient(baseX, baseY, baseX, baseY + baseH);
+    grad.addColorStop(0, entrance ? "#2bd66e" : el.color); grad.addColorStop(1, "#000");
+    ctx.fillStyle = grad; ctx.fillRect(baseX, baseY, baseW, baseH);
+    ctx.fillStyle = "#fff"; ctx.font = "bold " + (ts * 0.5) + "px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(entrance ? "IN" : "OUT", baseX + baseW / 2, baseY + baseH / 2);
+  }
+
+  function drawTower(tw, ts, ox, oy, el, view) {
+    const x = ox + tw.c * ts, y = oy + tw.r * ts, s = ts * 3;
+    ctx.save(); ctx.shadowColor = el.color; ctx.shadowBlur = 10 + Math.sin(view.time * 2.5) * 3;
+    assets.draw("assets/ui/tower-base.PNG", x, y, s, s); ctx.restore();
+    const asset = tw.def.asset || `assets/towers/${tw.def.id}.PNG`;
+    const aw = s, ah = s * 1.25, axp = x + (s - aw) / 2, ayp = y + s - ah;
+    if (!assets.draw(asset, axp, ayp, aw, ah)) {
+      ctx.fillStyle = el.dark; ctx.fillRect(x + 2, y + 2, s - 4, s - 4);
+      ctx.strokeStyle = el.color; ctx.lineWidth = 3; ctx.strokeRect(x + 2, y + 2, s - 4, s - 4);
+      ctx.fillStyle = "#0d0f1a"; ctx.font = (s * 0.3) + "px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(el.icon, x + s / 2, y + s / 2);
     }
-    const vs = setup.gameMode === "versus";
-    pts.forEach((p, i) => {
-      const px = cx + p.x * R, py = cy + p.y * R;
-      if (vs && i > 0) { // NPC seats: element unknown until the match starts
-        x.beginPath(); x.arc(px, py, 22, 0, 7); x.fillStyle = "rgba(255,255,255,.15)"; x.fill();
-        x.fillStyle = "rgba(255,255,255,.6)"; x.font = "bold 22px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
-        x.fillText("?", px, py + 1);
-        return;
+    if (tw.id === view.selectedTowerId && !assets.draw("assets/ui/tower-selected-frame.PNG", x, y, s, s)) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.strokeRect(x, y, s, s); }
+    ctx.fillStyle = "#fff"; ctx.font = "bold " + (ts * 0.5) + "px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(tw.level, x + s - ts * 0.5, y + ts * 0.5);
+    if (tw.expert > 0) { ctx.fillStyle = "#ffe066"; ctx.font = (ts * 0.4) + "px system-ui"; ctx.fillText("★".repeat(Math.min(3, tw.expert)), x + s / 2, y + s - ts * 0.35); }
+    if (tw.mutations.length) { ctx.fillStyle = "#ff5fa2"; ctx.beginPath(); ctx.arc(x + ts * 0.4, y + ts * 0.4, ts * 0.16, 0, 7); ctx.fill(); }
+  }
+
+  function drawEnemy(e, ts, ox, oy, view, alpha) {
+    // interpolate from previous to current position for smooth motion (§4)
+    const px = e.px == null ? TILE(e.fx) : e.px + (TILE(e.fx) - e.px) * alpha;
+    const py = e.py == null ? TILE(e.fy) : e.py + (TILE(e.fy) - e.py) * alpha;
+    const x = ox + px * ts, y = oy + py * ts, r = TILE(e.def.radius) * ts * 2.2;
+    const dbE = DB.ENEMIES[e.type] || {};
+    const asset = dbE.asset || `assets/enemies/${e.type}.PNG`;
+    if (!assets.draw(asset, x - r, y - r, r * 2, r * 2)) {
+      ctx.fillStyle = e.statuses && e.statuses["frozen"] ? "#bff0ff" : (dbE.color || "#d96b4a");
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    }
+    // boss ring
+    if (e.boss && !assets.draw("assets/ui/enemy-boss-ring.PNG", x - r - 4, y - r - 4, (r + 4) * 2, (r + 4) * 2)) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+    }
+    // selected ring
+    if (e.id === view.selectedEnemyId && !assets.draw("assets/ui/enemy-selected-ring.PNG", x - r - 6, y - r - 6, (r + 6) * 2, (r + 6) * 2)) {
+      ctx.strokeStyle = "#ffe066"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, 7); ctx.stroke();
+    }
+    // origin-element ring (shows which corridor the enemy came from)
+    const oid = view.field.elements[e.originIndex];
+    const oel = DB.ELEMENTS[oid];
+    if (oel && !assets.draw(`assets/ui/origin-rings/${oid}.PNG`, x - r - 3, y - r - 3, (r + 3) * 2, (r + 3) * 2)) {
+      ctx.strokeStyle = oel.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.stroke();
+    }
+    // sent marker (competitive)
+    if (e.sent) { ctx.strokeStyle = "#ff5fa2"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 7); ctx.stroke(); }
+    // hp bar
+    const w = r * 2, h = 4, hpc = Math.max(0, e.hp) / e.maxHp;
+    if (!assets.draw("assets/ui/hpbar-frame.PNG", x - w / 2, y - r - 10, w, 6)) { ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(x - w / 2, y - r - 8, w, h); }
+    let hpAsset = hpc <= 0.25 ? "assets/ui/hpbar-red.PNG" : hpc <= 0.5 ? "assets/ui/hpbar-yellow.PNG" : "assets/ui/hpbar-green.PNG";
+    if (!assets.draw(hpAsset, x - w / 2, y - r - 8, w * hpc, h)) {
+      ctx.fillStyle = hpc > 0.5 ? "#5fe07a" : hpc > 0.25 ? "#ffd23d" : "#ff4d6d"; ctx.fillRect(x - w / 2, y - r - 8, w * hpc, h);
+    }
+    // status icon (first non-adaptive status)
+    const sk = (e.statusKeys || []).filter(k => DB.STATUSES[k] && !DB.STATUSES[k].adaptive);
+    if (sk.length) {
+      const st = DB.STATUSES[sk[0]];
+      if (!assets.draw(st.asset || `assets/status/${sk[0]}.PNG`, x + r - 4, y - r - 4, 12, 12)) {
+        ctx.fillStyle = st.color; ctx.beginPath(); ctx.arc(x + r, y - r, 4, 0, 7); ctx.fill();
       }
-      const el = DB.ELEMENTS[setup.elements[i]] || DB.ELEMENTS.fire;
-      x.beginPath(); x.arc(px, py, 22, 0, 7); x.fillStyle = el.color; x.fill();
-      x.fillStyle = "#0d0f1a"; x.font = "26px serif"; x.textAlign = "center"; x.textBaseline = "middle";
-      x.fillText(el.icon, px, py + 1);
-    });
-    if (n === 1) { x.fillStyle = "rgba(255,255,255,.4)"; x.font = "20px sans-serif"; x.fillText("Single Lane", cx, cy + 50); }
-  }
-
-  // ---- mastery screen ------------------------------------------------------
-  function openMastery() {
-    const m = $("mastery-screen"); if (!m) return;
-    const meta = getMeta();
-    const avail = DB.availableElements(meta.mastery || {});
-    let html = `<button class="panel-close" id="ms-close">✕</button><h2>Elemental Mastery</h2><div class="mastery-grid">`;
-    DB.ELEMENT_ORDER.forEach((eid) => {
-      const el = DB.ELEMENTS[eid];
-      const lvl = (meta.mastery && meta.mastery[eid]) || 0;
-      const wins = (meta.elementWins && meta.elementWins[eid]) || 0;
-      const locked = !avail.includes(eid);
-      const nextReq = lvl >= 5 ? "MAX" : lvl === 4 ? "Reach Wave 100" : `Win ${DB.MASTERY.winsRequired[lvl + 1]} runs`;
-      html += `<div class="mastery-card ${locked ? "locked" : ""}" style="--ec:${el.color}">
-        <div class="mc-head">${el.icon} ${el.name} ${locked ? "🔒" : ""}</div>
-        <div class="mc-lvl">Mastery ${lvl}/5</div>
-        <div class="mc-pips">${[1,2,3,4,5].map(i => `<span class="${i <= lvl ? "on" : ""}"></span>`).join("")}</div>
-        <div class="mc-req">${locked ? unlockHint(eid) : nextReq}</div>
-        <div class="mc-wins">Wins with element: ${wins}</div></div>`;
-    });
-    html += `</div>`;
-    // ---- Synergy Codex: cross-element combos, discoverable in one place ----
-    html += `<h2 class="codex-head">⚗ Synergy Codex</h2>
-      <p class="dim codex-note">Hit an enemy carrying a status with a tower of the listed element to trigger the combo.</p>
-      <div class="codex-list">`;
-    for (const key in DB.SYNERGIES) {
-      const [st, el] = key.split("|");
-      const s = DB.STATUSES[st], E = DB.ELEMENTS[el], syn = DB.SYNERGIES[key];
-      if (!s || !E) continue;
-      html += `<div class="codex-row">
-        <span class="cx-combo">${s.icon} ${s.name} <span class="dim">+</span> ${E.icon} ${E.name}</span>
-        <span class="cx-name" style="color:${syn.color}">${syn.name}</span>
-        <span class="cx-eff">${synergyEffectText(syn)}</span></div>`;
     }
-    html += `</div>`;
-    m.innerHTML = html; m.classList.add("show");
-    $("ms-close").onclick = () => m.classList.remove("show");
-  }
-  function unlockHint(eid) {
-    if (eid === "light" || eid === "darkness") return "Unlock: all starters at Mastery 1";
-    if (eid === "mech" || eid === "abnormal") return "Unlock: any element at Mastery 5";
-    return "";
+    if (e.loopCount > 0) { ctx.fillStyle = "#ffd23d"; ctx.font = "bold " + (ts * 0.4) + "px system-ui"; ctx.textAlign = "center"; ctx.fillText("↻" + e.loopCount, x, y + r + 12); }
   }
 
-  // ---- multiplayer lobby ---------------------------------------------------
-  function renderMultiplayerLobby(mp) {
-    const box = $("mp-player-list");
-    const code = $("mp-room-code"); if (code) code.textContent = (mp && mp.roomId) || "---";
-    if (!box) return;
-    const room = mp && mp.room;
-    if (!room || !room.players) { box.innerHTML = `<p class="dim">Waiting for room data...</p>`; return; }
-    const players = Object.entries(room.players);
-    box.innerHTML = players.map(([id, p], i) => {
-      const me = id === mp.playerId ? " — You" : "";
-      const host = room.host === id ? " 👑" : "";
-      const ready = p.ready ? "✅ Ready" : "⏳ Not ready";
-      return `<div class="end-stat"><span>Player ${i + 1}${host}${me}</span><b>${ready}</b></div>`;
-    }).join("");
-    const startBtn = $("mp-start");
-    if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
+  // Snapshot enemy positions each tick so the next frame can interpolate (§4).
+  function snapshotPositions(state) {
+    for (const e of state.enemies) { e.px = TILE(e.fx); e.py = TILE(e.fy); }
   }
 
-  return { toast, setText, closeAllPanels, closeRing, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, toggleSendPanel, openBuildMenu, openBuildRing, openTowerRing, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
+  return { render, resize, snapshotPositions, worldGeom, gatePositions, fieldGeom, cw, ch, get dpr() { return dpr; } };
 }
 
-export default { createUI };
+export default { createRenderer };
