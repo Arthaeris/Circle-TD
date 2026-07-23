@@ -37,8 +37,115 @@ export function createUI(opts) {
 
   function closeAllPanels() {
     ["build-menu", "tower-panel", "enemy-panel", "send-panel"].forEach((id) => { const e = $(id); if (e) e.classList.remove("show"); });
+    closeRing();
     const v = getView(); v.selectedTowerId = null; v.selectedEnemyId = null; v.buildTile = null; v.buildMenuOpen = false; v.buildPreview = null;
     _sendSig = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // RADIAL MENUS — build & tower actions bloom around the tapped tile.
+  // Mouse: hover previews, click executes. Touch: first tap focuses/previews,
+  // second tap executes (confirm pattern). The ring lives in #radial-menu,
+  // an overlay on the game stage; anything else closes it.
+  // ---------------------------------------------------------------------------
+  let _ring = null;
+  function closeRing() {
+    const m = $("radial-menu"); if (m) { m.classList.remove("show"); m.innerHTML = ""; }
+    _ring = null;
+  }
+  function showRing(sx, sy, items, opts) {
+    const m = $("radial-menu"), stage = $("game-stage"); if (!m || !stage) return;
+    m.innerHTML = "";
+    const W = stage.clientWidth, H = stage.clientHeight, R = 78;
+    const cx = Math.max(R + 36, Math.min(W - R - 36, sx));
+    const cy = Math.max(R + 70, Math.min(H - R - 40, sy));
+    const label = document.createElement("div");
+    label.className = "rad-label";
+    label.style.left = cx + "px"; label.style.top = (cy - R - 36) + "px";
+    label.innerHTML = opts.title || "";
+    m.appendChild(label);
+    _ring = { items: {}, focus: null, label, defTitle: opts.title || "" };
+    const n = items.length;
+    items.forEach((it, i) => {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+      const b = document.createElement("button");
+      b.className = "rad-item" + (it.cls ? " " + it.cls : "");
+      if (it.color) b.style.setProperty("--ec", it.color);
+      b.style.left = (cx + Math.cos(a) * R) + "px";
+      b.style.top = (cy + Math.sin(a) * R) + "px";
+      const render = () => { b.innerHTML = typeof it.html === "function" ? it.html() : it.html; if (it.isDisabled) b.classList.toggle("cant", !!it.isDisabled()); };
+      render();
+      const focus = () => {
+        if (_ring.focus && _ring.items[_ring.focus]) _ring.items[_ring.focus].el.classList.remove("focus");
+        _ring.focus = it.key; b.classList.add("focus");
+        if (it.onFocus) it.onFocus();
+        label.innerHTML = it.focusHtml ? (typeof it.focusHtml === "function" ? it.focusHtml() : it.focusHtml) : _ring.defTitle;
+      };
+      b.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") { if (it.onFocus) it.onFocus(); if (it.confirm) focus(); } });
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        if (it.isDisabled && it.isDisabled()) return;
+        if (it.confirm && (!_ring || _ring.focus !== it.key)) { focus(); return; } // touch: tap again to confirm
+        it.exec();
+        if (_ring) render();
+      };
+      _ring.items[it.key] = { el: b, render };
+      m.appendChild(b);
+    });
+    m.classList.add("show");
+  }
+  function refreshRing() { if (!_ring) return; for (const k in _ring.items) _ring.items[k].render(); }
+
+  // Build ring: one bubble per unlocked tower of the corridor's element.
+  function openBuildRing(corr, tile, sx, sy) {
+    closeAllPanels();
+    const v = getView(); v.buildTile = tile; v.buildMenuOpen = true;
+    const el = DB.ELEMENTS[corr.element];
+    const slots = DB.unlockedTowerSlots(masteryLevel(corr.element));
+    const list = DB.TOWERS.filter((t) => t.element === corr.element && t.slot < slots);
+    const cur = () => v.state.economy === "shared" ? v.player.gold : v.player.essence[corr.element];
+    const items = list.map((t) => ({
+      key: t.id, color: el.color, confirm: true,
+      html: `<span class="ri-ico">${el.icon}</span><span class="ri-cost">${t.cost}</span>`,
+      focusHtml: () => {
+        const dps = t.archetype === "support" ? "" : ` · ${Math.round(t.damage * t.fireRate)} DPS`;
+        const st = t.status ? ` · ${DB.STATUSES[t.status].icon} ${DB.STATUSES[t.status].name}` : "";
+        return `<b>${t.name}</b> — ${t.cost}g${dps}${st}<br><span class="rl-dim">${t.archetype} · tap again to build</span>`;
+      },
+      onFocus: () => { v.buildPreview = { range: t.range }; },
+      exec: () => { cmd.build(corr.index, tile.c, tile.r, t.id); closeAllPanels(); },
+      isDisabled: () => cur() < t.cost,
+    }));
+    items.push({ key: "x", cls: "rad-cancel", confirm: false, html: "✕", exec: closeAllPanels });
+    showRing(sx, sy, items, { title: `${el.icon} Build — ${Math.floor(cur())}g` });
+  }
+
+  // Tower ring: upgrade / sell / target cycle / details.
+  function openTowerRing(corr, tw, sx, sy) {
+    closeAllPanels();
+    const v = getView(); v.selectedTowerId = tw.id; // renderer draws the range circle
+    const el = DB.ELEMENTS[tw.def.element], def = DB.TOWER_BY_ID[tw.def.id];
+    const gold = () => v.state.economy === "shared" ? v.player.gold : v.player.essence[def.element];
+    const upCost = () => Math.round(def.cost * DB.SCALING.upgradeCostBase * Math.pow(DB.SCALING.costGrowth, tw.level - 1));
+    const maxed = () => tw.level >= DB.CONFIG.maxLevel;
+    const TM = ["first", "last", "strong", "weak"];
+    const items = [
+      { key: "up", color: el.color, confirm: false,
+        html: () => maxed() ? `<span class="ri-ico">★</span><span class="ri-cost">MAX</span>` : `<span class="ri-ico">⬆</span><span class="ri-cost">${upCost()}</span>`,
+        isDisabled: () => maxed() || gold() < upCost(),
+        exec: () => { if (!maxed()) cmd.upgrade(corr.index, tw.id); } },
+      { key: "tgt", confirm: false,
+        html: () => `<span class="ri-ico">🎯</span><span class="ri-cost">${tw.targetMode || "first"}</span>`,
+        exec: () => { const m = TM[(TM.indexOf(tw.targetMode || "first") + 1) % TM.length]; cmd.setTarget(corr.index, tw.id, m); } },
+      { key: "info", confirm: false, html: `<span class="ri-ico">ℹ</span><span class="ri-cost">info</span>`,
+        exec: () => openTowerPanel(corr, tw) },
+      { key: "sell", cls: "rad-sell", confirm: true,
+        html: `<span class="ri-ico">💰</span><span class="ri-cost">+${sellRefund(def, tw.level)}</span>`,
+        focusHtml: () => `<b>Sell for +${sellRefund(def, tw.level)}g</b><br><span class="rl-dim">tap again to confirm</span>`,
+        exec: () => { cmd.sell(corr.index, tw.id); closeAllPanels(); } },
+      { key: "x", cls: "rad-cancel", confirm: false, html: "✕", exec: closeAllPanels },
+    ];
+    showRing(sx, sy, items, { title: `${el.icon} ${def.name} · Lv${tw.level}${maxed() ? " · mutations in ℹ" : ""}` });
   }
 
   // ---- synergy helpers (display-only views over DB.SYNERGIES) ---------------
@@ -335,10 +442,13 @@ export function createUI(opts) {
   // ---- live panel refresh (tower stats / enemy hp+status update in place) ----
   function refreshPanels() {
     const v = getView(); if (!v.state) return;
+    refreshRing(); // live affordability on radial items
     if (v.selectedTowerId) {
       let found = null, fcorr = null;
       for (const c of v.field.corridors) { const t = c.towers.find((t) => t.id === v.selectedTowerId); if (t) { found = t; fcorr = c; break; } }
       if (!found) { closeAllPanels(); _twSig = null; return; }
+      const tp = $("tower-panel");
+      if (!tp || !tp.classList.contains("show")) return; // ring open, details sheet closed
       const sig = found.level + "/" + found.expert + "/" + found.kills + "/" + found.mutations.length + "/" + (found.targetMode || "first");
       if (sig !== _twSig) openTowerPanel(fcorr, found); // rebuild only when it actually changed -> buttons stay clickable
     } else if (v.selectedEnemyId) {
@@ -525,7 +635,7 @@ export function createUI(opts) {
     if (startBtn) startBtn.style.display = room.host === mp.playerId ? "block" : "none";
   }
 
-  return { toast, setText, closeAllPanels, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, toggleSendPanel, openBuildMenu, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
+  return { toast, setText, closeAllPanels, closeRing, updateTopBar, updateEnemyOverview, updateWavePanel, updateWavePreview, updateBossBar, toggleSendPanel, openBuildMenu, openBuildRing, openTowerRing, openTowerPanel, openEnemyPanel, renderSetup, updateSetupDescs, drawShapePreview, openMastery, renderMultiplayerLobby, refreshPanels };
 }
 
 export default { createUI };
