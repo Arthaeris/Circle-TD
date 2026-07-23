@@ -51,6 +51,27 @@
   // still being fought (plain data; the sim-core reads it via buildBalance).
   if (!DB.CONFIG.earlyCallBonus) DB.CONFIG.earlyCallBonus = { base: 20, perWave: 6 };
 
+  // ---------------------------------------------------------------------------
+  // SERPENTINE MAZE PLAN — used by the NPC builders (app/main.js) and by tests.
+  // Returns an ordered list of tower TOP-LEFT spots. Horizontal walls alternate
+  // their open side, so enemies snake the full corridor width between every
+  // wall — maximizing the path length past the towers. The gap is part of the
+  // plan, so placements never fully block the path (core validation stays happy).
+  // Pure function of the grid config: safe to call anywhere, including Node.
+  // ---------------------------------------------------------------------------
+  DB.makeMazePlan = function (cols, rows, towerSize) {
+    const S = towerSize || 3;
+    const plan = [];
+    const wallRows = [];
+    for (let r = rows - 8; r >= 4; r -= S + 3) wallRows.push(r); // bottom-up: defend the entrance first
+    wallRows.forEach((r, k) => {
+      const leftOpen = k % 2 === 1;
+      if (leftOpen) { for (let c = cols - S; c >= S + 1; c -= S) plan.push({ c, r }); } // gap on the LEFT
+      else { for (let c = 0; c <= cols - S - (S + 1); c += S) plan.push({ c, r }); }    // gap on the RIGHT
+    });
+    return plan;
+  };
+
   // §6.4 — content-gating version fields.
   if (DB.codeVersion == null) DB.codeVersion = 4; // v4: flat send levels, versus mode
   if (DB.contentHash === undefined) DB.contentHash = null; // filled by hashContent at boot
