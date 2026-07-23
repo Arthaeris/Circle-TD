@@ -59,63 +59,61 @@
         <h2>New Run</h2>
         <div style="width:64px"></div>
       </div>
-      <div class="setup-body">
-        <div class="setup-left">
-          <div class="setup-section">
-            <h3>Game Mode</h3>
-            <div class="row">
-              <button class="chip" data-mode="single">Single Corridor</button>
-              <button class="chip" data-mode="loop">Loop Mode</button>
-              <button class="chip" data-mode="endless">Endless</button>
-            </div>
-            <p class="setup-desc" id="desc-mode"></p>
+      <div class="setup-body compact">
+        <div class="mt-cards">
+          <button class="mt-card" data-gamemode="solo"><span class="mtc-ico">🧍</span><span>Solo</span></button>
+          <button class="mt-card" data-gamemode="versus"><span class="mtc-ico">🤖</span><span>Vs NPCs</span></button>
+          <button class="mt-card" data-gamemode="coop"><span class="mtc-ico">🤝</span><span>Co-op</span></button>
+          <button class="mt-card" data-gamemode="competitive"><span class="mtc-ico">⚔️</span><span>Compete</span></button>
+        </div>
+        <div class="opt-row">
+          <span class="opt-lbl">Waves</span>
+          <span class="opt-seg">
+            <button class="seg" data-mode="loop">Loop</button>
+            <button class="seg" data-mode="single">Single</button>
+            <button class="seg" data-mode="endless">Endless</button>
+          </span>
+        </div>
+        <div class="opt-row">
+          <span class="opt-lbl">Corridors</span>
+          <span class="opt-seg">
+            <button class="seg" id="corr-minus" aria-label="Fewer corridors">−</button>
+            <b id="corr-count">4</b>
+            <button class="seg" id="corr-plus" aria-label="More corridors">+</button>
+            <span class="opt-note" id="shape-name"></span>
+          </span>
+        </div>
+        <div class="opt-row">
+          <span class="opt-lbl">Economy</span>
+          <span class="opt-seg">
+            <button class="seg" data-econ="shared">Gold</button>
+            <button class="seg" data-econ="elemental">Essence</button>
+          </span>
+        </div>
+        <button class="opt-row opt-more" id="setup-more">
+          <span class="opt-lbl">More — status &amp; pacing</span><span id="more-chev">▾</span>
+        </button>
+        <div id="more-body" class="more-body">
+          <div class="opt-row">
+            <span class="opt-lbl">Status</span>
+            <span class="opt-seg">
+              <button class="seg" data-status="standard">Single</button>
+              <button class="seg" data-status="advanced">Stacking</button>
+            </span>
           </div>
-          <div class="setup-section">
-            <h3>Match Type</h3>
-            <div class="row">
-              <button class="chip" data-gamemode="solo">Solo</button>
-              <button class="chip" data-gamemode="versus">Vs NPCs</button>
-              <button class="chip" data-gamemode="coop">Co-op</button>
-              <button class="chip" data-gamemode="competitive">Competitive</button>
-            </div>
-            <p class="setup-desc" id="desc-gamemode"></p>
-          </div>
-          <div class="setup-section">
-            <h3>Corridors — <span id="shape-name"></span></h3>
-            <div class="row" id="corridor-buttons"></div>
-          </div>
-          <div class="setup-section">
-            <h3>Economy</h3>
-            <div class="row">
-              <button class="chip" data-econ="shared">Shared Gold</button>
-              <button class="chip" data-econ="elemental">Elemental Essence</button>
-            </div>
-            <p class="setup-desc" id="desc-econ"></p>
-          </div>
-          <div class="setup-section">
-            <h3>Status System</h3>
-            <div class="row">
-              <button class="chip" data-status="standard">Single Status</button>
-              <button class="chip" data-status="advanced">Advanced Stacking</button>
-            </div>
-            <p class="setup-desc" id="desc-status"></p>
-          </div>
-          <div class="setup-section">
-            <h3>Wave Pacing</h3>
-            <div class="row">
-              <button class="chip" data-pacing="manual">Manual</button>
-              <button class="chip" data-pacing="auto">Auto-Start</button>
-            </div>
-            <p class="setup-desc" id="desc-pacing"></p>
+          <div class="opt-row">
+            <span class="opt-lbl">Pacing</span>
+            <span class="opt-seg">
+              <button class="seg" data-pacing="manual">Manual</button>
+              <button class="seg" data-pacing="auto">Auto-start</button>
+            </span>
           </div>
         </div>
-        <div class="setup-right">
-          <div class="preview-box"><canvas id="preview-canvas"></canvas></div>
-          <div class="setup-section">
-            <h3>Element Assignment</h3>
-            <div id="element-assign"></div>
-          </div>
+        <div class="preview-box compact">
+          <canvas id="preview-canvas"></canvas>
+          <div class="pv-hint" id="pv-hint">Tap a corridor to change its element</div>
         </div>
+        <p class="setup-desc" id="setup-hint"></p>
       </div>
       <button id="btn-start-run" class="btn big primary start-btn">⚔ Begin Run</button>
     </div>
