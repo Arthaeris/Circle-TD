@@ -63,11 +63,18 @@
     const S = towerSize || 3;
     const plan = [];
     const wallRows = [];
+    const laneCenter = (cols - 1) / 2; // mobs spawn and walk up the middle
     for (let r = rows - 8; r >= 4; r -= S + 3) wallRows.push(r); // bottom-up: defend the entrance first
     wallRows.forEach((r, k) => {
       const leftOpen = k % 2 === 1;
-      if (leftOpen) { for (let c = cols - S; c >= S + 1; c -= S) plan.push({ c, r }); } // gap on the LEFT
-      else { for (let c = 0; c <= cols - S - (S + 1); c += S) plan.push({ c, r }); }    // gap on the RIGHT
+      const spots = [];
+      if (leftOpen) { for (let c = cols - S; c >= S + 1; c -= S) spots.push(c); } // gap on the LEFT
+      else { for (let c = 0; c <= cols - S - (S + 1); c += S) spots.push(c); }    // gap on the RIGHT
+      // CENTER-OUT build order: the first towers of every wall sit over the
+      // middle of the lane, in range of the spawn path — edge towers come
+      // later, once the wall (and the serpentine detour) is taking shape.
+      spots.sort((a, b) => Math.abs(a + (S - 1) / 2 - laneCenter) - Math.abs(b + (S - 1) / 2 - laneCenter));
+      for (const c of spots) plan.push({ c, r });
     });
     return plan;
   };
