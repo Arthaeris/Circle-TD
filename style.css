@@ -593,8 +593,9 @@ body {
 .wp-speeds { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--dim); }
 
 
-/* quick wave controls */
+/* quick wave controls — a collapsible dock */
 #quick-wave-controls {
+  position: relative;
   flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;               /* wave preview sits on its own line above the buttons */
@@ -607,6 +608,48 @@ body {
   z-index: 20;
   touch-action: manipulation;
 }
+#dock-handle {
+  position: absolute; top: -15px; left: 50%; transform: translateX(-50%);
+  width: 64px; height: 15px; padding: 0; line-height: 1;
+  border: 1px solid rgba(255,255,255,.15); border-bottom: none; border-radius: 9px 9px 0 0;
+  background: #161b38; color: var(--dim); font-size: 10px; cursor: pointer;
+  touch-action: manipulation; z-index: 21;
+}
+#quick-wave-controls.collapsed { padding: 3px 12px; min-height: 0; }
+#quick-wave-controls.collapsed > *:not(#dock-handle) { display: none !important; }
+
+/* floating wave button while the dock is collapsed */
+#wave-fab {
+  position: absolute; right: 14px; bottom: 16px; z-index: 24;
+  width: 62px; height: 62px; border-radius: 50%;
+  font-size: 15px; font-weight: 800; padding: 0;
+  box-shadow: 0 4px 18px rgba(0,0,0,.55);
+}
+
+/* radial context menus (build / tower actions) */
+#radial-menu { position: absolute; inset: 0; z-index: 32; display: none; pointer-events: none; }
+#radial-menu.show { display: block; }
+.rad-item {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 54px; height: 54px; border-radius: 50%;
+  background: rgba(14,17,36,.95); border: 2px solid var(--ec, rgba(255,255,255,.35));
+  color: var(--ink); font-family: var(--font); font-weight: 700; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  pointer-events: auto; touch-action: manipulation;
+}
+.rad-item .ri-ico { font-size: 17px; line-height: 1; }
+.rad-item .ri-cost { font-size: 10px; line-height: 1; color: var(--gold, #ffd23d); max-width: 48px; overflow: hidden; text-overflow: ellipsis; }
+.rad-item.focus { border-color: #fff; box-shadow: 0 0 14px var(--ec, rgba(255,255,255,.5)); }
+.rad-item.cant { opacity: .38; }
+.rad-item.rad-cancel { width: 40px; height: 40px; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.25); font-size: 14px; }
+.rad-item.rad-sell { border-color: var(--bad, #ff4d6d); }
+.rad-label {
+  position: absolute; transform: translate(-50%, -100%);
+  background: rgba(10,12,28,.95); border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+  padding: 7px 12px; font-size: 12px; line-height: 1.5; color: var(--ink);
+  pointer-events: none; white-space: nowrap; text-align: center; max-width: 300px;
+}
+.rad-label .rl-dim { color: var(--dim); font-size: 11px; }
 
 /* next-wave preview strip */
 #wave-preview {
