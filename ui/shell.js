@@ -563,13 +563,42 @@ export function createUI(opts) {
         row.appendChild(optsEl); wrap.appendChild(row);
       }
     }
+    // element picker: pills for the corridor node selected on the preview
+    const picker = $("element-picker");
+    if (picker) {
+      const n = vs ? 1 : (setup.mode === "single" ? 1 : setup.corridors);
+      if (_pvSel != null && _pvSel >= n) _pvSel = null;
+      if (_pvSel == null && (n === 1 || vs)) _pvSel = 0; // single choice: keep the pills visible
+      picker.innerHTML = "";
+      if (_pvSel == null) {
+        const hint = document.createElement("div"); hint.className = "ep-hint";
+        hint.textContent = "Tap a corridor node above to pick its element";
+        picker.appendChild(hint);
+      } else {
+        if (!availElements.includes(setup.elements[_pvSel])) setup.elements[_pvSel] = availElements[_pvSel % availElements.length];
+        const head = document.createElement("div"); head.className = "ep-head";
+        head.textContent = vs ? "Your element" : "Corridor " + (_pvSel + 1) + " element";
+        picker.appendChild(head);
+        const rowEl = document.createElement("div"); rowEl.className = "assign-opts";
+        availElements.forEach((eid) => {
+          const el = DB.ELEMENTS[eid];
+          const b = document.createElement("button"); b.className = "elbtn"; b.style.setProperty("--ec", el.color);
+          b.innerHTML = `<span>${el.icon}</span>${el.name}`;
+          b.classList.toggle("sel", setup.elements[_pvSel] === eid);
+          b.onclick = () => { setup.elements[_pvSel] = eid; setup._lastTouched = "element:" + _pvSel; renderSetup(setup, availElements); };
+          rowEl.appendChild(b);
+        });
+        picker.appendChild(rowEl);
+      }
+    }
     _pv = { setup, avail: availElements };
     bindPreviewClick();
     drawShapePreview(setup);
   }
 
-  // ---- interactive preview: tap a ring node to cycle its element -----------
+  // ---- interactive preview: tap a ring node to select it, pills pick -------
   let _pv = null;
+  let _pvSel = null; // selected corridor node index (null = none)
   function bindPreviewClick() {
     const c = $("preview-canvas"); if (!c || c.dataset.click) return; c.dataset.click = "1";
     c.addEventListener("click", (ev) => {
@@ -586,9 +615,7 @@ export function createUI(opts) {
         const px = cx + pts[i].x * R, py = cy + pts[i].y * R;
         if ((x - px) * (x - px) + (y - py) * (y - py) > 42 * 42) continue;
         if (vs && i > 0) { setup._lastTouched = "gamemode"; updateSetupDescs(setup); return; } // NPC seats roll at start
-        const cur = setup.elements[i];
-        const j = avail.indexOf(cur);
-        setup.elements[i] = avail[(j + 1) % avail.length];
+        _pvSel = i;
         setup._lastTouched = "element:" + i;
         renderSetup(setup, avail);
         return;
@@ -625,6 +652,12 @@ export function createUI(opts) {
       x.fillStyle = "#0d0f1a"; x.font = "26px serif"; x.textAlign = "center"; x.textBaseline = "middle";
       x.fillText(el.icon, px, py + 1);
     });
+    // dashed ring around the node whose element is being picked
+    if (_pvSel != null && _pvSel < pts.length && !(vs && _pvSel > 0)) {
+      const p = pts[_pvSel], px = cx + p.x * R, py = cy + p.y * R;
+      x.beginPath(); x.arc(px, py, 29, 0, 7);
+      x.strokeStyle = "#fff"; x.lineWidth = 3; x.setLineDash([7, 6]); x.stroke(); x.setLineDash([]);
+    }
     if (n === 1) { x.fillStyle = "rgba(255,255,255,.4)"; x.font = "20px sans-serif"; x.fillText("Single Lane", cx, cy + 50); }
   }
 
