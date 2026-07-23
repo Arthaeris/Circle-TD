@@ -504,12 +504,27 @@ export function createUI(opts) {
       auto: "The next wave starts automatically 5 seconds after the last one is cleared. The final End Boss always waits for you.",
     },
   };
+  // One shared hint line: shows info for whatever the player touched last
+  // (set setup._lastTouched before calling renderSetup).
   function updateSetupDescs(setup) {
-    setText("desc-mode", SETUP_DESCS.mode[setup.mode] || "");
-    setText("desc-gamemode", SETUP_DESCS.gamemode[setup.gameMode] || "");
-    setText("desc-econ", SETUP_DESCS.econ[setup.economy] || "");
-    setText("desc-status", SETUP_DESCS.status[setup.status] || "");
-    setText("desc-pacing", SETUP_DESCS.pacing[setup.pacing] || "");
+    const h = $("setup-hint"); if (!h) return;
+    const t = setup._lastTouched || "gamemode";
+    let txt = "";
+    if (t === "mode") txt = SETUP_DESCS.mode[setup.mode];
+    else if (t === "gamemode") txt = SETUP_DESCS.gamemode[setup.gameMode];
+    else if (t === "econ") txt = SETUP_DESCS.econ[setup.economy];
+    else if (t === "status") txt = SETUP_DESCS.status[setup.status];
+    else if (t === "pacing") txt = SETUP_DESCS.pacing[setup.pacing];
+    else if (t.indexOf("element:") === 0) {
+      const i = +t.split(":")[1];
+      const el = DB.ELEMENTS[setup.elements[i]];
+      if (el) txt = `${el.icon} Corridor ${i + 1} — ${el.name}. Tap the node again to cycle.`;
+    } else if (t === "corridors") {
+      txt = setup.gameMode === "versus"
+        ? `You + ${setup.corridors - 1} NPC rival${setup.corridors > 2 ? "s" : ""} in a ring — last one standing wins.`
+        : `${setup.corridors} corridors (${DB.SHAPE_NAMES[setup.corridors] || ""}) — ${setup.mode === "endless" ? "endless waves" : (setup.corridors * 10) + " waves"}.`;
+    }
+    h.textContent = txt || "";
   }
   function renderSetup(setup, availElements) {
     const vs = setup.gameMode === "versus";
@@ -523,8 +538,17 @@ export function createUI(opts) {
       cc.innerHTML = ""; DB.CORRIDOR_OPTIONS.forEach((n) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = n; b.dataset.cn = n; b.onclick = () => { if (setup.mode === "single" && setup.gameMode !== "versus") return; if (setup.gameMode === "versus" && n < 3) return; setup.corridors = n; renderSetup(setup, availElements); }; cc.appendChild(b); }); cc.dataset.built = "1";
     }
     if (cc) cc.querySelectorAll(".chip").forEach((b) => { b.classList.toggle("sel", +b.dataset.cn === setup.corridors); b.classList.toggle("disabled", (setup.mode === "single" && !vs) || (vs && +b.dataset.cn < 3)); });
-    const shape = $("shape-name"); if (shape) shape.textContent = vs ? ("You + " + (setup.corridors - 1) + " NPCs") : (DB.SHAPE_NAMES[setup.corridors] || "");
     if (setup.mode === "single" && !vs) setup.corridors = 1;
+    // corridor stepper (compact setup)
+    const singleLocked = setup.mode === "single" && !vs;
+    const opts = DB.CORRIDOR_OPTIONS.filter((n) => (vs ? n >= 3 : n > 1));
+    const cnt = $("corr-count"); if (cnt) cnt.textContent = singleLocked ? 1 : setup.corridors;
+    const ci = opts.indexOf(setup.corridors);
+    const bm = $("corr-minus"), bp = $("corr-plus");
+    if (bm) bm.classList.toggle("disabled", singleLocked || ci <= 0);
+    if (bp) bp.classList.toggle("disabled", singleLocked || ci >= opts.length - 1);
+    const shape = $("shape-name"); if (shape) shape.textContent = singleLocked ? "Single Lane" : (vs ? ("You + " + (setup.corridors - 1) + " NPCs") : (DB.SHAPE_NAMES[setup.corridors] || ""));
+    const pvh = $("pv-hint"); if (pvh) pvh.textContent = vs ? "Tap your corridor to change its element — NPCs roll theirs" : "Tap a corridor to change its element";
     document.querySelectorAll("[data-econ]").forEach((b) => { b.classList.toggle("sel", vs ? b.dataset.econ === "shared" : b.dataset.econ === setup.economy); b.classList.toggle("disabled", vs); });
     document.querySelectorAll("[data-status]").forEach((b) => b.classList.toggle("sel", b.dataset.status === setup.status));
     const wrap = $("element-assign");
@@ -539,7 +563,37 @@ export function createUI(opts) {
         row.appendChild(optsEl); wrap.appendChild(row);
       }
     }
+    _pv = { setup, avail: availElements };
+    bindPreviewClick();
     drawShapePreview(setup);
+  }
+
+  // ---- interactive preview: tap a ring node to cycle its element -----------
+  let _pv = null;
+  function bindPreviewClick() {
+    const c = $("preview-canvas"); if (!c || c.dataset.click) return; c.dataset.click = "1";
+    c.addEventListener("click", (ev) => {
+      if (!_pv) return;
+      const { setup, avail } = _pv;
+      const rect = c.getBoundingClientRect();
+      const x = (ev.clientX - rect.left) * 2, y = (ev.clientY - rect.top) * 2; // canvas renders at 2x
+      const W = c.width, H = c.height;
+      const vs = setup.gameMode === "versus";
+      const n = vs ? setup.corridors : (setup.mode === "single" ? 1 : setup.corridors);
+      const pts = DB.polygonPoints(n);
+      const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.36;
+      for (let i = 0; i < pts.length; i++) {
+        const px = cx + pts[i].x * R, py = cy + pts[i].y * R;
+        if ((x - px) * (x - px) + (y - py) * (y - py) > 42 * 42) continue;
+        if (vs && i > 0) { setup._lastTouched = "gamemode"; updateSetupDescs(setup); return; } // NPC seats roll at start
+        const cur = setup.elements[i];
+        const j = avail.indexOf(cur);
+        setup.elements[i] = avail[(j + 1) % avail.length];
+        setup._lastTouched = "element:" + i;
+        renderSetup(setup, avail);
+        return;
+      }
+    });
   }
 
   // ---- setup preview (shape polygon + chosen element icons) ----------------
