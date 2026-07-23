@@ -205,6 +205,32 @@ function showScreen(s) {
   game.screen = s;
   ["loading", "menu", "setup", "game"].forEach((x) => { const el = $("screen-" + x); if (el) el.classList.toggle("active", x === s); });
   if (s === "menu") playMenuMusic(); else if (s === "game") playGameMusic();
+  applyDock();
+}
+
+// ---------------------------------------------------------------------------
+// COLLAPSIBLE DOCK + WAVE FAB — the bottom bar folds to a slim handle; while
+// collapsed, a floating wave button keeps the core action one tap away.
+// ---------------------------------------------------------------------------
+const DOCK_KEY = "ctw_dock_v1";
+let dockCollapsed = false;
+function loadDockPref() { try { dockCollapsed = localStorage.getItem(DOCK_KEY) === "1"; } catch (e) {} }
+function applyDock() {
+  const d = $("quick-wave-controls"); if (d) d.classList.toggle("collapsed", dockCollapsed);
+  const h = $("dock-handle"); if (h) h.textContent = dockCollapsed ? "▴" : "▾";
+  const f = $("wave-fab"); if (f) f.style.display = (dockCollapsed && game.screen === "game") ? "" : "none";
+  if (renderer) resize(); // the stage height changes with the dock
+}
+function refreshWaveFab() {
+  const f = $("wave-fab"); if (!f || f.style.display === "none" || !game.state) return;
+  const pl = myPlayer();
+  let txt;
+  if (game.autoT != null) txt = "⟳" + Math.max(1, Math.ceil(game.autoT));
+  else if (pl.phase === "prep") txt = "☠";
+  else if (pl.phase === "endboss") txt = "…";
+  else txt = "▶" + (game.state.mode === "endless" ? (pl.wave + 1) : Math.min(pl.wave + 1, pl.totalWaves));
+  if (f.textContent !== txt) f.textContent = txt;
+  f.classList.toggle("disabled", pl.phase === "endboss");
 }
 function refreshMenu() { const c = $("btn-continue"); if (c) c.classList.toggle("disabled", !localStorage.getItem(RUN_KEY)); }
 
@@ -352,8 +378,11 @@ function onCanvasClick(ev) {
   if (near) { ui.openEnemyPanel(near); return; }
   if (!ownField) { ui.closeAllPanels(); return; }
   const cell = corr.grid[r * game.state.grid.cols + c];
-  if (cell === 2) { const tw = towerAt(corr, c, r); if (tw) { ui.openTowerPanel(corr, tw); return; } }
-  if (cell === 0) { game.buildSpot = findBuildSpot(game.state, fieldId(), corr.index, c, r); ui.openBuildMenu(corr, { c, r }); return; }
+  if (cell === 2) { const tw = towerAt(corr, c, r); if (tw) { ui.openTowerRing(corr, tw, px, py); return; } }
+  if (cell === 0) {
+    game.buildSpot = findBuildSpot(game.state, fieldId(), corr.index, c, r);
+    if (game.buildSpot) { ui.openBuildRing(corr, { c, r }, px, py); return; }
+  }
   ui.closeAllPanels();
 }
 function towerAt(corr, c, r) { const S = DB.CONFIG.towerSize; for (const t of corr.towers) if (c >= t.c && c < t.c + S && r >= t.r && r < t.r + S) return t; return null; }
@@ -411,6 +440,7 @@ function boot() {
   ui = createUI({ DB, getView: () => view, cmd, masteryLevel, enterCorridor, getMeta: () => meta });
 
   initAudio();
+  loadDockPref();
   const unlockOnce = () => { unlockMusic(); (game.screen === "game" ? playGameMusic() : playMenuMusic()); document.removeEventListener("pointerdown", unlockOnce); };
   document.addEventListener("pointerdown", unlockOnce);
   bindUI();
@@ -450,7 +480,7 @@ function boot() {
     },
   });
   loop.start();
-  setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); refreshAutoBtn(); } }, 250);
+  setInterval(() => { if (game.screen === "game") { ui.updateTopBar(); ui.refreshPanels(); refreshAutoBtn(); refreshWaveFab(); } }, 250);
 }
 function refreshAutoBtn() {
   const b = $("quick-auto-wave"); if (!b) return;
@@ -492,6 +522,12 @@ function bindUI() {
   bind("btn-prev-corridor", () => enterCorridor((game.activeCorridor - 1 + corridorNavCount()) % corridorNavCount()));
   bind("btn-next-corridor", () => enterCorridor((game.activeCorridor + 1) % corridorNavCount()));
   bind("quick-start-wave", () => { game.autoT = null; cmd.startWave(); });
+  bind("wave-fab", () => { game.autoT = null; cmd.startWave(); });
+  bind("dock-handle", () => {
+    dockCollapsed = !dockCollapsed;
+    try { localStorage.setItem(DOCK_KEY, dockCollapsed ? "1" : "0"); } catch (e) {}
+    applyDock();
+  });
   // auto wave-start lock: never press "Start Wave" again (end boss stays manual)
   bind("quick-auto-wave", () => {
     game.autoWave = !game.autoWave;
@@ -604,6 +640,7 @@ function bindTouch() {
   let tch = null;
   canvas.addEventListener("wheel", (ev) => {
     if (game.screen !== "game" || game.view !== "field") return; ev.preventDefault();
+    ui.closeRing(); // radial menus are anchored to screen space — close on scroll
     const rect = canvas.getBoundingClientRect(), px = ev.clientX - rect.left, py = ev.clientY - rect.top;
     if (ev.ctrlKey) zoomFieldAt(px, py, game.fieldCam.zoom * (ev.deltaY < 0 ? 1.1 : 0.9));
     else { game.fieldCam.y -= ev.deltaY; clampFieldCamera(); }
@@ -615,6 +652,7 @@ function bindTouch() {
   }, { passive: false });
   canvas.addEventListener("touchmove", (ev) => {
     if (game.screen !== "game" || game.view !== "field" || !tch) return; ev.preventDefault();
+    ui.closeRing(); // panning/pinching dismisses any open radial menu
     if (tch.mode === "pan" && ev.touches.length === 1) { const t = ev.touches[0]; game.fieldCam.x += t.clientX - tch.x; game.fieldCam.y += t.clientY - tch.y; tch.x = t.clientX; tch.y = t.clientY; clampFieldCamera(); }
     if (tch.mode === "pinch" && ev.touches.length === 2) {
       const a = ev.touches[0], b = ev.touches[1], d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -767,23 +805,44 @@ function botAct(b) {
   const q = (c) => game.driver.queue(c);
   const wave = Math.max(1, pl.wave);
   const reserve = 30 + wave * 6;
+  const G = st.grid;
 
-  // 1) build up defenses toward a wave-scaled tower count
-  const want = Math.min(12, 2 + Math.ceil(wave * 0.6));
+  // Serpentine maze plan: alternating walls force enemies to snake the full
+  // corridor width, walking past every tower for as long as possible.
+  if (!b.plan) { b.plan = DB.makeMazePlan(G.cols, G.rows, DB.CONFIG.towerSize); b.fails = {}; }
+  // resolve the previous build attempt: if the tower count didn't grow, the
+  // spot is blocked (obstacle / transient path check) — count a strike
+  if (b.lastBuild != null) {
+    if (corr.towers.length <= b.lastBuild.count) b.fails[b.lastBuild.idx] = (b.fails[b.lastBuild.idx] || 0) + 1;
+    b.lastBuild = null;
+  }
+
+  // 1) build the maze, wall by wall from the entrance up
+  const want = Math.min(24, 3 + Math.ceil(wave * 0.8));
   if (corr.towers.length < want) {
-    const options = DB.TOWERS.filter((t) => t.element === corr.element && t.cost <= pl.gold - 20);
-    if (options.length) {
-      const t = options[Math.floor(Math.random() * options.length)];
-      const G = st.grid;
-      const gx = 3 + Math.floor(Math.random() * (G.cols - 6));
-      const gy = 5 + Math.floor(Math.random() * (G.rows - 10));
-      q(C.buildTower(b.id, 0, gx, gy, t.id, 5));
-      return;
+    let idx = -1;
+    for (let i = 0; i < b.plan.length; i++) {
+      if ((b.fails[i] || 0) >= 3) continue;                       // give up on stubborn spots
+      const s = b.plan[i];
+      if (corr.grid[(s.r + 1) * G.cols + (s.c + 1)] === 2) continue; // already built
+      idx = i; break;
+    }
+    if (idx >= 0) {
+      // prefer the strongest affordable tower (mazing walls should also hurt)
+      const options = DB.TOWERS.filter((t) => t.element === corr.element && t.cost <= pl.gold - 20).sort((a, z) => z.cost - a.cost);
+      if (options.length) {
+        const t = Math.random() < 0.6 ? options[0] : options[Math.floor(Math.random() * options.length)];
+        const s = b.plan[idx];
+        b.lastBuild = { idx, count: corr.towers.length };
+        q(C.buildTower(b.id, 0, s.c + 1, s.r + 1, t.id, 5)); // +1: build centers on the tap tile
+        return;
+      }
     }
   }
-  // 2) upgrade or mutate an existing tower
+  // 2) upgrade or mutate an existing tower (prefer the front line: lowest level first)
   if (corr.towers.length && Math.random() < 0.5) {
-    const tw = corr.towers[Math.floor(Math.random() * corr.towers.length)];
+    let tw = corr.towers[0];
+    for (const t of corr.towers) if (t.level < tw.level) tw = t;
     if (tw.level < DB.CONFIG.maxLevel) {
       const cost = Math.round(tw.def.cost * DB.SCALING.upgradeCostBase * Math.pow(DB.SCALING.costGrowth, tw.level - 1));
       if (pl.gold > cost + reserve) { q(C.upgradeTower(b.id, 0, tw.id)); return; }
@@ -792,7 +851,7 @@ function botAct(b) {
       q(C.mutateTower(b.id, 0, tw.id, m.id, 5)); return;
     }
   }
-  // 3) aggression: upgrade send tiers, then send the strongest affordable mob
+  // 3) aggression: upgrade send tiers, then dump a BURST of the strongest mob
   if (corr.towers.length >= 3 && wave >= 2) {
     const types = Object.keys(DB.SENDS);
     if (Math.random() < 0.25) {
@@ -807,7 +866,10 @@ function botAct(b) {
       const c = DB.sendCost(t, lvl);
       if (c <= budget && c > bestC) { bestC = c; bestT = t; }
     }
-    if (bestT && Math.random() < 0.6) q(C.sendEnemy(b.id, 0, bestT)); // target: sim picks next corridor
+    if (bestT && Math.random() < 0.7) {
+      const n = Math.max(1, Math.min(3, Math.floor(budget / bestC))); // bursts hit harder than trickles
+      for (let i = 0; i < n; i++) q(C.sendEnemy(b.id, 0, bestT));
+    }
   }
 }
 
