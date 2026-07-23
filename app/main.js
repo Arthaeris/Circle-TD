@@ -242,6 +242,7 @@ function openSetup() {
   const avail = DB.availableElements(meta.mastery);
   setup.elements = []; for (let i = 0; i < 8; i++) setup.elements.push(avail[i % avail.length]);
   if (!game.mpHosting && lobbyPlayerCount() < 2 && setup.gameMode !== "solo" && setup.gameMode !== "versus") setup.gameMode = "solo";
+  setup._lastTouched = "gamemode";
   showScreen("setup"); ui.renderSetup(setup, DB.availableElements(meta.mastery)); updateGameModeButtons();
 }
 
@@ -500,16 +501,35 @@ function bindUI() {
   bind("btn-menu-save", () => { const m = $("save-modal"); if (m) m.classList.add("show"); });
   bind("btn-setup-back", () => { if (game.mpHosting && game.lobby) { game.mpHosting = false; window.CTWMultiplayer.setRoomStatus(game.lobby.roomId, "lobby").catch(() => {}); openLobby(); } else showScreen("menu"); });
   bind("btn-start-run", () => { if (game.mpHosting) { beginMultiplayerMatch(); return; } startRun({ mode: setup.mode, corridors: setup.corridors, economy: setup.economy, status: setup.status, gameMode: setup.gameMode, pacing: setup.pacing, elements: setup.elements }); });
-  document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { setup.mode = b.dataset.mode; if (setup.mode === "single") setup.corridors = 1; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
-  document.querySelectorAll("[data-econ]").forEach((b) => b.onclick = () => { setup.economy = b.dataset.econ; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
-  document.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { setup.status = b.dataset.status; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
-  document.querySelectorAll("[data-pacing]").forEach((b) => b.onclick = () => { setup.pacing = b.dataset.pacing; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { setup.mode = b.dataset.mode; if (setup.mode === "single") setup.corridors = 1; else if (setup.corridors < 3) setup.corridors = 4; setup._lastTouched = "mode"; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  document.querySelectorAll("[data-econ]").forEach((b) => b.onclick = () => { setup.economy = b.dataset.econ; setup._lastTouched = "econ"; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  document.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { setup.status = b.dataset.status; setup._lastTouched = "status"; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  document.querySelectorAll("[data-pacing]").forEach((b) => b.onclick = () => { setup.pacing = b.dataset.pacing; setup._lastTouched = "pacing"; ui.renderSetup(setup, DB.availableElements(meta.mastery)); });
+  // corridor stepper
+  const stepCorridors = (dir) => {
+    if (setup.mode === "single" && setup.gameMode !== "versus") return;
+    const opts = DB.CORRIDOR_OPTIONS.filter((n) => (setup.gameMode === "versus" ? n >= 3 : n > 1));
+    let i = opts.indexOf(setup.corridors); if (i < 0) i = 0;
+    i = Math.max(0, Math.min(opts.length - 1, i + dir));
+    setup.corridors = opts[i];
+    setup._lastTouched = "corridors";
+    ui.renderSetup(setup, DB.availableElements(meta.mastery));
+  };
+  bind("corr-minus", () => stepCorridors(-1));
+  bind("corr-plus", () => stepCorridors(1));
+  // "More" accordion (status & pacing) — remembers its state
+  const MORE_KEY = "ctw_setupmore_v1";
+  const applyMore = (open) => { const m = $("more-body"); if (m) m.classList.toggle("open", open); const ch = $("more-chev"); if (ch) ch.textContent = open ? "▴" : "▾"; };
+  let moreOpen = false; try { moreOpen = localStorage.getItem(MORE_KEY) === "1"; } catch (e) {}
+  applyMore(moreOpen);
+  bind("setup-more", () => { moreOpen = !moreOpen; try { localStorage.setItem(MORE_KEY, moreOpen ? "1" : "0"); } catch (e) {} applyMore(moreOpen); });
   document.querySelectorAll("[data-gamemode]").forEach((b) => b.onclick = () => {
     if (game.mpHosting) { ui.toast("Match type is set by the room"); return; }
     const mp = b.dataset.gamemode === "coop" || b.dataset.gamemode === "competitive"; // versus is offline
     if (mp && lobbyPlayerCount() < 2) { ui.toast("Join a multiplayer room with another player first."); return; }
     setup.gameMode = b.dataset.gamemode;
     if (setup.gameMode === "versus" && setup.corridors < 3) setup.corridors = 4;
+    setup._lastTouched = "gamemode";
     ui.renderSetup(setup, DB.availableElements(meta.mastery));
     updateGameModeButtons();
   });
